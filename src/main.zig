@@ -1,6 +1,8 @@
 const r4os = @import("r4os");
 
 const gui = r4os.gui;
+const Tasks = @import("tasks.zig").Tasks;
+const TaskView = @import("task_view.zig").View;
 const Rect = gui.Rect;
 const Canvas = gui.Canvas;
 const Tab = enum { usage, tasks };
@@ -13,8 +15,11 @@ const selected = 0x0079a6;
 const face = 0xe8ecee;
 
 pub fn r4_app_main(api: *r4os.App2) i32 {
-    var window = api.window(&.{}) orelse return r4os.abi.err_no_group;
-    var app = App{ .window = &window, .fonts = gui.FontSet.system(&window.draw) };
+    var timers = [_]r4os.Timer{.{}};
+    var window = api.window(&timers) orelse return r4os.abi.err_no_group;
+    const allocator = api.allocator() orelse return r4os.abi.err_no_group;
+    var app = App{ .api = api, .window = &window, .timer = &timers[0], .allocator = allocator, .fonts = gui.FontSet.system(&window.draw) };
+    defer app.tasks.deinit(allocator);
     return app.run();
 }
 
@@ -44,7 +49,13 @@ fn cell(canvas: Canvas, area: Rect, bg: u32) void {
 }
 
 const App = struct {
+    api: *r4os.App2,
     window: *r4os.Window,
+    timer: *r4os.Timer,
+    allocator: @import("std").mem.Allocator,
+    tasks: Tasks = .{},
+    task_view: TaskView = .{},
+    focused: bool = true,
     fonts: gui.FontSet,
     tab: Tab = .usage,
     pressed: ?Tab = null,
@@ -62,20 +73,58 @@ const App = struct {
                         self.fonts = gui.FontSet.system(&self.window.draw);
                         self.paint();
                     },
-                    .focus_lost, .input_reset => self.pressed = null,
+                    .focus_gained => {
+                        self.focused = true;
+                        self.updateTimer();
+                    },
+                    .focus_lost => {
+                        self.focused = false;
+                        self.timer.cancel();
+                        self.pressed = null;
+                        self.task_view.thumb_y = null;
+                    },
+                    .input_reset => {
+                        self.pressed = null;
+                        self.task_view.thumb_y = null;
+                    },
+                    .timer => {
+                        if (self.focused and self.tab == .tasks) self.refresh();
+                    },
+                    .wheel => |wheel| {
+                        if (self.tab == .tasks) {
+                            self.task_view.first = self.task_view.bar.wheel(wheel.delta).first_index;
+                            self.paint();
+                        }
+                    },
                     .mouse => |mouse| switch (mouse.action) {
-                        .down => self.pressed = tabAt(mouse.x, mouse.y),
+                        .down => {
+                            self.pressed = tabAt(mouse.x, mouse.y);
+                            if (self.pressed == null and self.tab == .tasks) {
+                                self.task_view.mouseDown(mouse.x, mouse.y);
+                                self.paint();
+                            }
+                        },
                         .up => {
                             const tab = tabAt(mouse.x, mouse.y);
                             if (tab != null and tab == self.pressed) self.select(tab.?);
                             self.pressed = null;
+                            self.task_view.thumb_y = null;
                         },
-                        .move => {},
+                        .move => if (self.tab == .tasks and self.task_view.thumb_y != null) {
+                            self.task_view.drag(mouse.y);
+                            self.paint();
+                        },
                     },
                     .key => |key| switch (key.key) {
                         gui.Key.tab, gui.Key.shift_tab => self.select(if (self.tab == .usage) .tasks else .usage),
                         gui.Key.left => self.select(.usage),
                         gui.Key.right => self.select(.tasks),
+                        gui.Key.up, gui.Key.down, gui.Key.home, gui.Key.end, gui.Key.page_up, gui.Key.page_down => {
+                            if (self.tab == .tasks) {
+                                self.task_view.key(key.key);
+                                self.paint();
+                            }
+                        },
                         else => {},
                     },
                     else => {},
@@ -90,7 +139,20 @@ const App = struct {
     fn select(self: *App, tab: Tab) void {
         if (self.tab == tab) return;
         self.tab = tab;
+        self.updateTimer();
+        if (tab == .usage) self.paint();
+    }
+
+    fn refresh(self: *App) void {
+        self.tasks.refresh(self.api, self.allocator);
         self.paint();
+    }
+
+    fn updateTimer(self: *App) void {
+        self.timer.cancel();
+        if (self.tab != .tasks or !self.focused) return;
+        self.refresh();
+        _ = self.timer.start(&self.window.sys, r4os.TimerId.init(1), .{ .nanoseconds = 1_000_000_000 }, true);
     }
 
     fn paint(self: *App) void {
@@ -122,7 +184,7 @@ const App = struct {
                 label(canvas, area.inset(2, 1), "20%", .center, ink, paper);
             }
         } else {
-            label(canvas, box(sidebar + 12, 10, canvas.w - sidebar - 24, 30), "Tasks", .left, ink, paper);
+            self.task_view.paint(frame.canvas.withFontId(r4os.abi.gui_font_builtin_id), sidebar, &self.tasks);
         }
         _ = frame.present();
     }
