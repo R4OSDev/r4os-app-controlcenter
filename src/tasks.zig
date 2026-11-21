@@ -41,14 +41,15 @@ pub const Tasks = struct {
         }
         var caller: a.ProgramProcessHandle = .{};
         if (sys.programOpenHandle(@intCast(app.raw.instance_id), &caller) != 0) return;
+        const render_timeout = sys.ticksFromMilliseconds(1000);
         var request: [wire.request_size]u8 = undefined;
         wire.encodeRequest(&request, .{
             .op = .render_status,
             .caller = .{ .instance = caller.instance_id, .generation = caller.generation },
-            .deadline_tick = sys.ticks() +| timeout,
+            .deadline_tick = sys.ticks() +| render_timeout,
         });
         var response: [wire.response_size]u8 = undefined;
-        if (sys.serviceCall(service.handle, wire.operation, &request, &header, &response, timeout) != response.len or header.status != 0) return;
+        if (sys.serviceCall(service.handle, wire.operation, &request, &header, &response, render_timeout) != response.len or header.status != 0) return;
         const value = wire.decodeResponse(&response) catch return;
         if (value.op == .render_status and value.result == 0) self.render = value.render;
     }

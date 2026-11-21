@@ -1,6 +1,7 @@
 const r4os = @import("r4os");
 
 const gui = r4os.gui;
+const Usage = @import("usage.zig").Usage;
 const Tasks = @import("tasks.zig").Tasks;
 const TaskView = @import("task_view.zig").View;
 const Rect = gui.Rect;
@@ -20,6 +21,7 @@ pub fn r4_app_main(api: *r4os.App2) i32 {
     const allocator = api.allocator() orelse return r4os.abi.err_no_group;
     var app = App{ .api = api, .window = &window, .timer = &timers[0], .allocator = allocator, .fonts = gui.FontSet.system(&window.draw) };
     defer app.tasks.deinit(allocator);
+    defer app.usage.deinit(allocator);
     return app.run();
 }
 
@@ -53,6 +55,7 @@ const App = struct {
     window: *r4os.Window,
     timer: *r4os.Timer,
     allocator: @import("std").mem.Allocator,
+    usage: Usage = .{},
     tasks: Tasks = .{},
     task_view: TaskView = .{},
     focused: bool = true,
@@ -63,7 +66,7 @@ const App = struct {
     fn run(self: *App) i32 {
         _ = self.window.setTitle("Control Center");
         _ = self.window.setMinimumSize(558, 332);
-        self.paint();
+        self.updateTimer();
         while (!self.window.sys.programShouldClose()) {
             switch (self.window.waitMessage(r4os.time_contract.timeoutForever())) {
                 .message => |message| switch (message) {
@@ -88,7 +91,7 @@ const App = struct {
                         self.task_view.thumb_y = null;
                     },
                     .timer => {
-                        if (self.focused and self.tab == .tasks) self.refresh();
+                        if (self.focused) self.refresh(false);
                     },
                     .wheel => |wheel| {
                         if (self.tab == .tasks) {
@@ -140,19 +143,59 @@ const App = struct {
         if (self.tab == tab) return;
         self.tab = tab;
         self.updateTimer();
-        if (tab == .usage) self.paint();
     }
 
-    fn refresh(self: *App) void {
-        self.tasks.refresh(self.api, self.allocator);
-        self.paint();
+    fn refresh(self: *App, force: bool) void {
+        if (self.tab == .usage) {
+            const changed = self.usage.refresh(self.api, self.allocator);
+            if (changed or force) self.paint();
+        } else {
+            self.tasks.refresh(self.api, self.allocator);
+            self.paint();
+        }
     }
 
     fn updateTimer(self: *App) void {
         self.timer.cancel();
-        if (self.tab != .tasks or !self.focused) return;
-        self.refresh();
+        self.usage.reset();
+        if (!self.focused) return;
+        self.refresh(true);
         _ = self.timer.start(&self.window.sys, r4os.TimerId.init(1), .{ .nanoseconds = 1_000_000_000 }, true);
+    }
+
+    fn percentText(value: ?u8, buf: *[5]u8) [:0]const u8 {
+        return if (value) |v| @import("std").fmt.bufPrintZ(buf, "{d}%", .{v}) catch "--" else "--";
+    }
+
+    fn paintUsage(self: *App, canvas: Canvas) void {
+        const x = sidebar + summary_width;
+        const width = canvas.w - x - 8;
+        const n: i32 = @intCast(self.usage.cores.items.len);
+        const columns = @max(1, @min(@divTrunc(width, 48), @divTrunc(n + 1, 2)));
+        const rows = @max(1, @divTrunc(n + columns - 1, columns));
+        const tile_w = @min(52, @divTrunc(width, columns));
+        const note_h: i32 = if (self.usage.unknown_topology) 22 else 0;
+        const tile_h = @min(45, @divTrunc(canvas.h - 12 - note_h, rows));
+        const height = @max(98, rows * tile_h + note_h + 8);
+        _ = canvas.rect(box(sidebar, height, canvas.w - sidebar, 1), line);
+        _ = canvas.rect(box(x - 1, 0, 1, height), line);
+        label(canvas, box(sidebar + 8, 4, summary_width - 16, 23), "CPU", .left, ink, paper);
+        var buf: [5]u8 = undefined;
+        const caption = percentText(self.usage.percent, &buf);
+        const summary = box(sidebar + 3, 25, summary_width - 6, 65);
+        const display = canvas.withFontId(self.fonts.display);
+        const large = if (display.textWidthZ(caption.ptr) + 4 <= summary.w) display else canvas.withFontId(self.fonts.heading);
+        label(large, summary, caption, .center, ink, paper);
+        for (self.usage.cores.items, 0..) |core, index| {
+            const i: i32 = @intCast(index);
+            const area = box(x + 5 + @mod(i, columns) * tile_w, 5 + @divTrunc(i, columns) * tile_h, tile_w - 4, tile_h - 4);
+            cell(canvas, area, paper);
+            label(canvas.withFontId(r4os.abi.gui_font_builtin_id), area.inset(1, 1), percentText(core.percent, &buf), .center, ink, paper);
+        }
+        if (self.usage.unknown_topology or n == 0) {
+            const message = if (self.usage.unknown_topology) "Kernzuordnung unbekannt" else "Keine CPU-Zeitdaten";
+            label(canvas, box(x + 6, if (n == 0) 8 else rows * tile_h + 5, width, 23), message, .left, ink, paper);
+        }
     }
 
     fn paint(self: *App) void {
@@ -172,17 +215,7 @@ const App = struct {
             label(frame.canvas.withFontId(r4os.abi.gui_font_builtin_id), area.inset(2, 1), if (tab == .usage) "Auslastung" else "Tasks", .center, if (tab == self.tab) paper else ink, bg);
         }
         if (self.tab == .usage) {
-            _ = canvas.rect(box(sidebar, 99, canvas.w - sidebar, 1), line);
-            _ = canvas.rect(box(sidebar + summary_width - 1, 0, 1, 99), line);
-            label(canvas, box(sidebar + 8, 4, summary_width - 16, 23), "CPU", .left, ink, paper);
-            label(canvas.withFontId(self.fonts.display), box(sidebar + 3, 25, summary_width - 6, 65), "40%", .center, ink, paper);
-            for (0..12) |i| {
-                const col: i32 = @intCast(i % 6);
-                const row: i32 = @intCast(i / 6);
-                const area = box(sidebar + summary_width + 5 + col * 52, 5 + row * 45, 48, 41);
-                cell(canvas, area, paper);
-                label(canvas, area.inset(2, 1), "20%", .center, ink, paper);
-            }
+            self.paintUsage(canvas);
         } else {
             self.task_view.paint(frame.canvas.withFontId(r4os.abi.gui_font_builtin_id), sidebar, &self.tasks);
         }
