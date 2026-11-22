@@ -8,7 +8,7 @@ const Sample = struct {
     epoch: u64 = 0,
 };
 
-const Display = union(enum) {
+pub const Display = union(enum) {
     zero,
     below_mb,
     mb_s: u64,

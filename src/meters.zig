@@ -107,7 +107,7 @@ pub fn Meter(comptime Source: type) type {
     return struct {
         const Self = @This();
         const Sample = Source.Sample;
-        pub const Row = struct { sample: Sample, values: Values, changed: bool };
+        pub const Row = struct { sample: Sample, values: Values, changed: bool, label_changed: bool };
         rows: std.ArrayList(Row) = .empty,
         next: std.ArrayList(Row) = .empty,
         buffer: std.ArrayList(Sample) = .empty,
@@ -157,14 +157,16 @@ pub fn Meter(comptime Source: type) type {
                 var sample = item;
                 var values: Values = .{};
                 var changed = true;
+                var label_changed = true;
                 if (self.find(item)) |old| {
                     if (!names) Source.retainNames(&sample, old.sample);
                     if (!self.fresh and old.sample.generation == sample.generation and sample.clock_generation != 0 and old.sample.clock_generation == sample.clock_generation and sample.stamp_ns > old.sample.stamp_ns)
                         values = Source.measure(old.sample, sample, sample.stamp_ns - old.sample.stamp_ns);
-                    changed = !Source.sameLabel(old.sample, sample) or !std.meta.eql(old.values, values);
+                    label_changed = !Source.sameLabel(old.sample, sample);
+                    changed = label_changed or !std.meta.eql(old.values, values);
                 }
                 if (i >= self.rows.items.len or !Source.sameDevice(self.rows.items[i].sample, sample)) self.layout_changed = true;
-                self.next.appendAssumeCapacity(.{ .sample = sample, .values = values, .changed = changed });
+                self.next.appendAssumeCapacity(.{ .sample = sample, .values = values, .changed = changed, .label_changed = label_changed });
             }
             std.mem.swap(std.ArrayList(Row), &self.rows, &self.next);
             self.available = true;

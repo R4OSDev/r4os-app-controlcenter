@@ -1,6 +1,5 @@
 const std = @import("std");
 const r4os = @import("r4os");
-const gui = r4os.gui;
 const mb = 1024 * 1024;
 
 // Values are rounded at display precision so a one-page change does not
@@ -34,7 +33,7 @@ pub const Belegung = struct {
 };
 
 pub fn fillColor(percent: u8) u32 {
-    if (percent < 40) return 0x55b96b;
+    if (percent < 40) return 0x62bd83;
     if (percent < 70) return 0xf0ca40;
     return 0xe95b56;
 }
@@ -45,52 +44,16 @@ pub fn fillWidth(inner: i32, basis_points: u16) i32 {
 }
 
 pub fn amount(out: []u8, tenths: ?u64) []const u8 {
-    const v = tenths orelse return "—";
-    return std.fmt.bufPrint(out, "{d},{d} MB", .{ v / 10, v % 10 }) catch "—";
+    var rounded = tenths orelse return "–";
+    const units = [_][]const u8{ "MB", "GB", "TB", "PB" };
+    var unit: usize = 0;
+    while (rounded >= 10 * 1024 and unit + 1 < units.len) : (unit += 1)
+        rounded = rounded / 1024 + @intFromBool(rounded % 1024 >= 512);
+    return std.fmt.bufPrint(out, "{d},{d} {s}", .{ rounded / 10, rounded % 10, units[unit] }) catch "–";
 }
 
-// Classic text commands paint an opaque glyph cell. The Alpha8 mask keeps
-// the colour boundary visible even where it runs through a digit.
-pub const Caption = struct {
-    value: ?u8 = null,
-    below_one: bool = false,
-    width: u32 = 0,
-    mask: [64 * 16]u8 = @splat(0),
-
-    pub fn draw(self: *Caption, canvas: gui.Canvas, area: gui.Rect, memory: ?Belegung, ink: u32) void {
-        const reading = memory orelse {
-            _ = canvas.rect(.{ .x = area.x + @divTrunc(area.w - 8, 2), .y = area.y + @divTrunc(area.h, 2), .w = 8, .h = 1 }, ink);
-            return;
-        };
-        const v = reading.percent();
-        const small = reading.basis_points > 0 and v == 0;
-        if (self.value != v or self.below_one != small) {
-            var buf: [5]u8 = undefined;
-            const digits = if (small) "<1%" else std.fmt.bufPrint(&buf, "{d}%", .{v}) catch return;
-            @memset(&self.mask, 0);
-            for (digits, 0..) |ch, index| {
-                var glyph: r4os.abi.GuiGlyphBitmap = .{};
-                if (canvas.ctx.fontGlyphBitmap(r4os.abi.gui_font_builtin_id, ch, &glyph) != 0) return;
-                for (glyph.rows[0..8], 0..) |row, y| {
-                    for (0..8) |x| {
-                        if ((row >> @intCast(x)) & 1 != 0) {
-                            const start = y * 128 + index * 16 + x * 2;
-                            @memset(self.mask[start..][0..2], 255);
-                            @memset(self.mask[start + 64 ..][0..2], 255);
-                        }
-                    }
-                }
-            }
-            self.width = @intCast(digits.len * 16);
-            self.value = v;
-            self.below_one = small;
-        }
-        _ = canvas.blendAlpha8(area.x + @divTrunc(area.w - @as(i32, @intCast(self.width)), 2), area.y + @divTrunc(area.h - 16, 2), self.width, 16, 64, ink, &self.mask);
-    }
-};
-
 test "RAM colours, lengths and balances at the thresholds in both directions" {
-    const expected = [_]u32{ 0x55b96b, 0x55b96b, 0xf0ca40, 0xf0ca40, 0xe95b56, 0xe95b56 };
+    const expected = [_]u32{ 0x62bd83, 0x62bd83, 0xf0ca40, 0xf0ca40, 0xe95b56, 0xe95b56 };
     const percent = [_]u8{ 0, 39, 40, 69, 70, 100 };
     for (0..12) |n| {
         const i = if (n < 6) n else 11 - n;

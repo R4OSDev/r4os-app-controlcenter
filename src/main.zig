@@ -8,15 +8,14 @@ const ram = @import("ram.zig");
 const Usage = @import("usage.zig").Usage;
 const Tasks = @import("tasks.zig").Tasks;
 const TaskView = @import("task_view.zig").View;
+const resources = @import("resources.zig");
 const theme = @import("theme.zig");
 const Text = @import("typography.zig").Text;
 const Scroll = @import("scroll.zig").Scroll;
 const Rect = gui.Rect;
 const Canvas = gui.Canvas;
 const Tab = enum { usage, tasks };
-const row_height = 72;
 
-const summary_width = 110;
 const paper = theme.bg;
 const ink = theme.ink;
 const line = theme.line;
@@ -49,17 +48,6 @@ fn tabAt(width: i32, x: i32, y: i32) ?Tab {
     return null;
 }
 
-fn label(canvas: Canvas, area: Rect, value: []const u8, alignment: gui.Align, fg: u32, bg: u32) void {
-    if (area.y + area.h <= 0 or area.y >= canvas.h) return;
-    var scratch: [160]u8 = undefined;
-    _ = canvas.label(.{ .rect = area, .text = value, .alignment = alignment, .fg = fg, .bg = bg }, &scratch);
-}
-
-fn cell(canvas: Canvas, area: Rect, bg: u32) void {
-    _ = canvas.rect(area, line);
-    _ = canvas.rect(area.inset(1, 1), bg);
-}
-
 const App = struct {
     api: *r4os.App2,
     window: *r4os.Window,
@@ -73,7 +61,6 @@ const App = struct {
     client_h: i32 = 0,
     memory: ?ram.Belegung = null,
     traffic: Traffic = .{},
-    bar_caption: ram.Caption = .{},
     tasks: Tasks = .{},
     task_view: TaskView = .{},
     usage_scroll: Scroll = .{ .stride = 18, .compact = true },
@@ -214,10 +201,6 @@ const App = struct {
         _ = self.timer.start(&self.window.sys, r4os.TimerId.init(1), .{ .nanoseconds = 1_000_000_000 }, true);
     }
 
-    fn percentText(value: ?u8, buf: *[5]u8) [:0]const u8 {
-        return if (value) |v| @import("std").fmt.bufPrintZ(buf, "{d}%", .{v}) catch "--" else "--";
-    }
-
     const Layout = struct {
         columns: i32,
         rows: i32,
@@ -225,10 +208,6 @@ const App = struct {
         cpu_h: i32,
         content_h: i32,
     };
-
-    fn sectionHeight(count: usize) i32 {
-        return @as(i32, @intCast(@max(1, count))) * row_height;
-    }
 
     fn layout(self: *const App, client_w: i32) Layout {
         const width = @max(1, client_w - theme.rail(self.client_w) - 33);
@@ -243,7 +222,7 @@ const App = struct {
             .rows = rows,
             .tile_w = @divTrunc(width + 4, columns),
             .cpu_h = cpu_h,
-            .content_h = cpu_h + 124 + sectionHeight(self.network.rows.items.len) + sectionHeight(self.disks.rows.items.len),
+            .content_h = cpu_h + resources.ram_height + resources.networkHeight(self.network.rows.items.len) + resources.diskHeight(self.disks.rows.items.len),
         };
     }
 
@@ -258,10 +237,15 @@ const App = struct {
         self.usage_scroll.layout(if (overflow) box(frame_canvas.w - 12, 5, 11, @max(1, canvas.h - 10)) else .{}, @intCast(layout_.content_h), @intCast(canvas.h));
         const top = -@as(i32, @intCast(self.usage_scroll.first));
         if (top + layout_.cpu_h >= 0) self.paintCpu(canvas, layout_, top);
+        const x = theme.rail(self.client_w) + 17;
+        const w = canvas.w - x - 16;
+        const p = theme.Painter{ .canvas = canvas, .text = self.text };
         const ram_top = top + layout_.cpu_h;
-        if (ram_top < canvas.h and ram_top + 124 > 0) self.paintRam(canvas, ram_top);
-        self.paintNetwork(canvas, ram_top + 124);
-        self.paintDisks(canvas, ram_top + 124 + sectionHeight(self.network.rows.items.len));
+        const net_top = ram_top + resources.ram_height;
+        const disk_top = net_top + resources.networkHeight(self.network.rows.items.len);
+        if (ram_top < canvas.h and net_top > 0) resources.memory(p, x, ram_top, w, theme.labelWidth(self.client_w), self.memory, self.traffic.display);
+        if (net_top < canvas.h and disk_top > 0) resources.network(p, x, net_top, w, &self.network);
+        if (disk_top < canvas.h) resources.disks(p, x, disk_top, w, &self.disks);
         if (overflow) {
             var scratch: [20]u8 = undefined;
             _ = self.usage_scroll.bar.draw(frame_canvas, &scratch);
@@ -295,148 +279,63 @@ const App = struct {
         p.rule(x, y + geometry.cpu_h, w, line);
     }
 
-    fn paintRam(self: *App, canvas: Canvas, y: i32) void {
-        const sidebar = theme.rail(self.client_w);
-        const x = sidebar + summary_width;
-        const left = sidebar + 8;
-        const narrow = summary_width - 16;
-        _ = canvas.rect(box(x - 1, y + 1, 1, 122), line);
-        label(canvas, box(left, y + 6, narrow, 23), "RAM", .left, ink, paper);
-        label(canvas.withFontId(r4os.abi.gui_font_builtin_id), box(left, y + 34, narrow, 21), "Durchsatz", .left, ink, paper);
-        if (self.traffic.display) |rate| {
-            var buf: [24]u8 = undefined;
-            label(canvas.withFontId(r4os.abi.gui_font_builtin_id), box(left, y + 54, narrow, 23), rate.text(&buf), .left, ink, paper);
-        } else {
-            _ = canvas.rect(box(left + 2, y + 65, 10, 1), ink);
-        }
-
-        const bar = box(x + 12, y + 12, canvas.w - x - 26, 29);
-        if (bar.w < 3) return;
-        _ = canvas.rect(box(bar.x, bar.y, bar.w, 1), line);
-        _ = canvas.rect(box(bar.x, bar.y + bar.h - 1, bar.w, 1), line);
-        _ = canvas.rect(box(bar.x, bar.y + 1, 1, bar.h - 2), line);
-        _ = canvas.rect(box(bar.x + bar.w - 1, bar.y + 1, 1, bar.h - 2), line);
-        const inner = bar.inset(1, 1);
-        if (self.memory) |m| {
-            _ = canvas.rect(box(inner.x, inner.y, ram.fillWidth(inner.w, m.basis_points), inner.h), ram.fillColor(m.percent()));
-        }
-        self.bar_caption.draw(canvas, inner, self.memory, ink);
-        const names = [_][]const u8{ "Belegt", "Frei", "Gesamt" };
-        const values: [3]?u64 = if (self.memory) |m| .{ m.used_tenths, m.total_tenths - m.used_tenths, m.total_tenths } else @splat(null);
-        for (names, values, 0..) |name, value, i| {
-            const row = y + 49 + @as(i32, @intCast(i)) * 22;
-            var buf: [36]u8 = undefined;
-            label(canvas, box(bar.x, row, 74, 21), name, .left, ink, paper);
-            if (value != null) {
-                label(canvas, box(bar.x + 78, row, bar.w - 78, 21), ram.amount(&buf, value), .left, ink, paper);
-            } else {
-                _ = canvas.rect(box(bar.x + 80, row + 10, 10, 1), ink);
-            }
-        }
-    }
-
-    fn deviceHeader(self: *App, c: Canvas, y: i32, section: [:0]const u8, first: bool, name: []const u8, status: []const u8) void {
-        const sidebar = theme.rail(self.client_w);
-        const x = sidebar + summary_width;
-        _ = c.rect(box(sidebar, y, c.w - sidebar, 1), line);
-        _ = c.rect(box(x - 1, y, 1, row_height), line);
-        const small = c.withFontId(r4os.abi.gui_font_builtin_id);
-        if (first) {
-            const area = box(sidebar + 8, y + 3, summary_width - 14, 24);
-            label(if (c.textWidthZ(section.ptr) <= area.w) c else small, area, section, .left, ink, paper);
-        }
-        const status_w = if (status.len == 0) @as(i32, 0) else @as(i32, @intCast(status.len)) * 8 + 8;
-        label(c.withFontId(self.fonts.body), box(x + 8, y + 3, c.w - x - 16 - status_w, 22), name, .left, ink, paper);
-        label(small, box(c.w - 8 - status_w, y + 3, status_w, 22), status, .right, ink, paper);
-    }
-
-    fn deviceRate(c: Canvas, y: i32, name: []const u8, rate: ?meters.Rate, percent: ?u32) void {
-        const x = theme.rail(c.w) + summary_width + 8;
-        const small = c.withFontId(r4os.abi.gui_font_builtin_id);
-        var buf: [32]u8 = undefined;
-        label(small, box(x, y, 80, 19), name, .left, ink, paper);
-        label(small, box(x + 84, y, c.w - x - 150, 19), meters.Rate.write(rate, &buf), .left, ink, paper);
-        if (percent) |v| {
-            const text = if (v == 0 and rate != null and rate.?.tenths != 0) "<1 %" else std.fmt.bufPrint(&buf, "{d} %", .{v}) catch "--";
-            label(small, box(c.w - 72, y, 64, 19), text, .right, ink, paper);
-        }
-    }
-
-    fn paintNetwork(self: *App, c: Canvas, top: i32) void {
-        if (self.network.rows.items.len == 0 and top < c.h and top + row_height > 0)
-            self.deviceHeader(c, top, "Netzwerk", true, if (self.network.available) "Kein Adapter" else "Nicht verfügbar", "");
-        for (self.network.rows.items, 0..) |row, i| {
-            const y = top + @as(i32, @intCast(i)) * row_height;
-            if (y >= c.h) break;
-            if (y + row_height <= 0) continue;
-            const sample = row.sample;
-            var buf: [72]u8 = undefined;
-            const name = std.fmt.bufPrint(&buf, "{s}  #{d}", .{ std.mem.sliceTo(&sample.name, 0), sample.interface_id }) catch "Adapter";
-            self.deviceHeader(c, y, "Netzwerk", i == 0, name, switch (sample.link) {
-                1 => "Getrennt",
-                2 => "Verbunden",
-                else => "Link unbekannt",
-            });
-            deviceRate(c, y + 25, "Empfang", row.values.first, row.values.first_pct);
-            deviceRate(c, y + 46, "Senden", row.values.second, row.values.second_pct);
-        }
-    }
-
-    fn paintDisks(self: *App, c: Canvas, top: i32) void {
-        if (self.disks.rows.items.len == 0 and top < c.h and top + row_height > 0)
-            self.deviceHeader(c, top, "Datenträger", true, if (self.disks.available) "Kein Datenträger" else "Nicht verfügbar", "");
-        for (self.disks.rows.items, 0..) |row, i| {
-            const y = top + @as(i32, @intCast(i)) * row_height;
-            if (y >= c.h) break;
-            if (y + row_height <= 0) continue;
-            const sample = row.sample;
-            var name_buf: [100]u8 = undefined;
-            var status_buf: [24]u8 = undefined;
-            const model = std.mem.sliceTo(&sample.model, 0);
-            const name = std.fmt.bufPrint(&name_buf, "#{d} {s}", .{ sample.slot, if (model.len != 0) model else std.mem.sliceTo(&sample.name, 0) }) catch "Datenträger";
-            const status = if (row.values.active_pct) |v| std.fmt.bufPrint(&status_buf, "Aktiv {d} %", .{v}) catch "Aktiv --" else "Aktiv --";
-            self.deviceHeader(c, y, "Datenträger", i == 0, name, status);
-            deviceRate(c, y + 25, "Lesen", row.values.first, null);
-            deviceRate(c, y + 46, "Schreiben", row.values.second, null);
-        }
-    }
-
     const Damage = struct {
-        lo: i32,
-        hi: i32 = 0,
-        fn add(self: *Damage, top: i32, bottom: i32, h: i32) void {
-            if (top >= h or bottom <= 0) return;
-            self.lo = @min(self.lo, @max(0, top));
-            self.hi = @max(self.hi, @min(h, bottom));
+        areas: [r4os.abi.gui_frame_max_damage_regions]r4os.abi.DisplayDamageRect = undefined,
+        count: usize = 0,
+
+        fn add(self: *Damage, x: i32, y: i32, w: i32, h: i32, client_h: i32) void {
+            const top = @max(0, y);
+            const bottom = @min(client_h, y + h);
+            if (bottom <= top or w <= 0) return;
+            if (self.count == self.areas.len) {
+                // The final slot absorbs any extra visible device rows.
+                const last = &self.areas[self.count - 1];
+                const left = @min(last.x, x);
+                const right = @max(last.x + @as(i32, @intCast(last.w)), x + w);
+                const lo = @min(last.y, top);
+                const hi = @max(last.y + @as(i32, @intCast(last.h)), bottom);
+                last.* = .{ .x = left, .y = lo, .w = @intCast(right - left), .h = @intCast(hi - lo) };
+                return;
+            }
+            self.areas[self.count] = .{ .x = x, .y = top, .w = @intCast(w), .h = @intCast(bottom - top) };
+            self.count += 1;
         }
     };
-    fn addRows(damage: *Damage, rows: anytype, top: i32, height: i32) void {
-        for (rows, 0..) |row, i| if (row.changed) {
-            const y = top + @as(i32, @intCast(i)) * row_height;
-            damage.add(y, y + row_height, height);
-        };
-    }
 
     fn paintChanges(self: *App, cpu: bool, memory: bool, trend: bool) void {
-        const g = self.layout(if (self.usage_scroll.bar.maxFirst() != 0) self.client_w - 3 else self.client_w);
+        const client_w = if (self.usage_scroll.bar.maxFirst() != 0) self.client_w - 3 else self.client_w;
+        const g = self.layout(client_w);
         const top = -@as(i32, @intCast(self.usage_scroll.first));
-        var damage = Damage{ .lo = self.client_h };
-        if (trend) damage.add(top + 37, top + 104, self.client_h);
-        if (cpu) damage.add(top, top + g.cpu_h + 1, self.client_h);
-        if (memory) damage.add(top + g.cpu_h, top + g.cpu_h + 124, self.client_h);
-        const network_top = top + g.cpu_h + 124;
-        addRows(&damage, self.network.rows.items, network_top, self.client_h);
-        addRows(&damage, self.disks.rows.items, network_top + sectionHeight(self.network.rows.items.len), self.client_h);
-        const sidebar = theme.rail(self.client_w);
-        if (damage.hi > damage.lo) self.paintRegion(.{ .x = sidebar, .y = damage.lo, .w = @intCast(self.client_w - sidebar), .h = @intCast(damage.hi - damage.lo) });
+        const x = theme.rail(self.client_w) + 17;
+        const w = client_w - x - 16;
+        const chart_left = theme.labelWidth(self.client_w) + 34;
+        var damage: Damage = .{};
+        if (cpu) {
+            damage.add(x, top + 37, w, g.cpu_h - 40, self.client_h);
+        } else if (trend) {
+            damage.add(x + chart_left, top + 37, w - chart_left, 67, self.client_h);
+        }
+        const ram_top = top + g.cpu_h;
+        if (memory) damage.add(x, ram_top + 12, w, 76, self.client_h);
+        const net_top = ram_top + resources.ram_height;
+        for (self.network.rows.items, 0..) |row, i| if (row.changed) {
+            if (self.network.rows.items.len == 1 and row.label_changed)
+                damage.add(x, net_top + 12, w, 28, self.client_h);
+            damage.add(x, net_top + 66 + @as(i32, @intCast(i)) * resources.net_row, w, resources.net_row, self.client_h);
+        };
+        const disk_top = net_top + resources.networkHeight(self.network.rows.items.len);
+        for (self.disks.rows.items, 0..) |row, i| if (row.changed) {
+            damage.add(x, disk_top + 61 + @as(i32, @intCast(i)) * resources.disk_row, w, resources.disk_row, self.client_h);
+        };
+        if (damage.count != 0) self.paintRegion(damage.areas[0..damage.count]);
     }
 
     fn paint(self: *App) void {
         self.paintRegion(null);
     }
 
-    fn paintRegion(self: *App, region: ?r4os.abi.DisplayDamageRect) void {
-        const open = if (region) |area| switch (self.window.beginPaintReplace(self.client_w, self.client_h, &.{area})) {
+    fn paintRegion(self: *App, region: ?[]const r4os.abi.DisplayDamageRect) void {
+        const open = if (region) |area| switch (self.window.beginPaintReplace(self.client_w, self.client_h, area)) {
             .paint => |frame| @as(@TypeOf(self.window.beginPaint()), .{ .paint = frame }),
             .failure => self.window.beginPaint(),
         } else self.window.beginPaint();
