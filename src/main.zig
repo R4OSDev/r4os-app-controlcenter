@@ -30,6 +30,7 @@ pub fn r4_app_main(api: *r4os.App2) i32 {
     defer app.tasks.deinit(allocator);
     defer app.usage.deinit(allocator);
     defer app.network.deinit(allocator);
+    defer app.disks.deinit(allocator);
     return app.run();
 }
 
@@ -66,6 +67,7 @@ const App = struct {
     allocator: @import("std").mem.Allocator,
     usage: Usage = .{},
     network: meters.Meter(meters.Network) = .{},
+    disks: meters.Meter(meters.Disk) = .{},
     client_w: i32 = 0,
     client_h: i32 = 0,
     memory: ?ram.Belegung = null,
@@ -182,7 +184,8 @@ const App = struct {
             self.memory = latest;
             const traffic_changed = self.traffic.refresh(self.api);
             self.network.refresh(self.api, self.allocator);
-            if (force or self.network.layout_changed or self.client_h == 0) {
+            self.disks.refresh(self.api, self.allocator);
+            if (force or self.disks.layout_changed or self.network.layout_changed or self.client_h == 0) {
                 self.paint();
             } else {
                 self.paintChanges(changed, memory_changed or traffic_changed);
@@ -197,6 +200,7 @@ const App = struct {
         self.timer.cancel();
         self.usage.reset();
         self.network.fresh = true;
+        self.disks.fresh = true;
         if (!self.focused) return;
         self.refresh(true);
         _ = self.timer.start(&self.window.sys, r4os.TimerId.init(1), .{ .nanoseconds = 1_000_000_000 }, true);
@@ -230,7 +234,7 @@ const App = struct {
             .rows = rows,
             .tile_w = @min(52, @divTrunc(width, columns)),
             .cpu_h = cpu_h,
-            .content_h = cpu_h + 124 + sectionHeight(self.network.rows.items.len),
+            .content_h = cpu_h + 124 + sectionHeight(self.network.rows.items.len) + sectionHeight(self.disks.rows.items.len),
         };
     }
 
@@ -248,6 +252,7 @@ const App = struct {
         const ram_top = top + layout_.cpu_h;
         if (ram_top < canvas.h and ram_top + 124 > 0) self.paintRam(canvas, ram_top);
         self.paintNetwork(canvas, ram_top + 124);
+        self.paintDisks(canvas, ram_top + 124 + sectionHeight(self.network.rows.items.len));
         if (overflow) {
             var scratch: [20]u8 = undefined;
             _ = self.usage_scroll.bar.draw(frame_canvas, &scratch);
@@ -325,12 +330,15 @@ const App = struct {
         }
     }
 
-    fn deviceHeader(self: *App, c: Canvas, y: i32, section: []const u8, first: bool, name: []const u8, status: []const u8) void {
+    fn deviceHeader(self: *App, c: Canvas, y: i32, section: [:0]const u8, first: bool, name: []const u8, status: []const u8) void {
         const x = sidebar + summary_width;
         _ = c.rect(box(sidebar, y, c.w - sidebar, 1), line);
         _ = c.rect(box(x - 1, y, 1, row_height), line);
-        if (first) label(c, box(sidebar + 8, y + 3, summary_width - 14, 24), section, .left, ink, paper);
         const small = c.withFontId(r4os.abi.gui_font_builtin_id);
+        if (first) {
+            const area = box(sidebar + 8, y + 3, summary_width - 14, 24);
+            label(if (c.textWidthZ(section.ptr) <= area.w) c else small, area, section, .left, ink, paper);
+        }
         const status_w = if (status.len == 0) @as(i32, 0) else @as(i32, @intCast(status.len)) * 8 + 8;
         label(c.withFontId(self.fonts.body), box(x + 8, y + 3, c.w - x - 16 - status_w, 22), name, .left, ink, paper);
         label(small, box(c.w - 8 - status_w, y + 3, status_w, 22), status, .right, ink, paper);
@@ -368,6 +376,25 @@ const App = struct {
         }
     }
 
+    fn paintDisks(self: *App, c: Canvas, top: i32) void {
+        if (self.disks.rows.items.len == 0 and top < c.h and top + row_height > 0)
+            self.deviceHeader(c, top, "Datenträger", true, if (self.disks.available) "Kein Datenträger" else "Nicht verfügbar", "");
+        for (self.disks.rows.items, 0..) |row, i| {
+            const y = top + @as(i32, @intCast(i)) * row_height;
+            if (y >= c.h) break;
+            if (y + row_height <= 0) continue;
+            const sample = row.sample;
+            var name_buf: [100]u8 = undefined;
+            var status_buf: [24]u8 = undefined;
+            const model = std.mem.sliceTo(&sample.model, 0);
+            const name = std.fmt.bufPrint(&name_buf, "#{d} {s}", .{ sample.slot, if (model.len != 0) model else std.mem.sliceTo(&sample.name, 0) }) catch "Datenträger";
+            const status = if (row.values.active_pct) |v| std.fmt.bufPrint(&status_buf, "Aktiv {d} %", .{v}) catch "Aktiv --" else "Aktiv --";
+            self.deviceHeader(c, y, "Datenträger", i == 0, name, status);
+            deviceRate(c, y + 25, "Lesen", row.values.first, null);
+            deviceRate(c, y + 46, "Schreiben", row.values.second, null);
+        }
+    }
+
     const Damage = struct {
         lo: i32,
         hi: i32 = 0,
@@ -377,6 +404,13 @@ const App = struct {
             self.hi = @max(self.hi, @min(h, bottom));
         }
     };
+    fn addRows(damage: *Damage, rows: anytype, top: i32, height: i32) void {
+        for (rows, 0..) |row, i| if (row.changed) {
+            const y = top + @as(i32, @intCast(i)) * row_height;
+            damage.add(y, y + row_height, height);
+        };
+    }
+
     fn paintChanges(self: *App, cpu: bool, memory: bool) void {
         const g = self.layout(if (self.usage_scroll.bar.maxFirst() != 0) self.client_w - 17 else self.client_w);
         const top = -@as(i32, @intCast(self.usage_scroll.first));
@@ -384,12 +418,8 @@ const App = struct {
         if (cpu) damage.add(top, top + g.cpu_h + 1, self.client_h);
         if (memory) damage.add(top + g.cpu_h, top + g.cpu_h + 124, self.client_h);
         const network_top = top + g.cpu_h + 124;
-        for (self.network.rows.items, 0..) |row, i| {
-            if (row.changed) {
-                const y = network_top + @as(i32, @intCast(i)) * row_height;
-                damage.add(y, y + row_height, self.client_h);
-            }
-        }
+        addRows(&damage, self.network.rows.items, network_top, self.client_h);
+        addRows(&damage, self.disks.rows.items, network_top + sectionHeight(self.network.rows.items.len), self.client_h);
         if (damage.hi > damage.lo) self.paintRegion(.{ .x = sidebar, .y = damage.lo, .w = @intCast(self.client_w - sidebar), .h = @intCast(damage.hi - damage.lo) });
     }
 

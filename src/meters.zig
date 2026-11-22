@@ -27,6 +27,7 @@ pub const Values = struct {
     second: ?Rate = null,
     first_pct: ?u32 = null,
     second_pct: ?u32 = null,
+    active_pct: ?u32 = null,
 };
 
 fn share(numerator: u128, denominator: u128) ?u32 {
@@ -69,6 +70,36 @@ pub const Network = struct {
     }
     pub fn sameLabel(a: Sample, b: Sample) bool {
         return a.link == b.link and std.mem.eql(u8, &a.name, &b.name);
+    }
+};
+
+pub const Disk = struct {
+    pub const Sample = r.abi.StorageActivitySample;
+
+    pub fn fetch(api: *r.App2, names: bool, out: []Sample) i32 {
+        return api.system().storageActivity(names, out);
+    }
+    pub fn sameDevice(a: Sample, b: Sample) bool {
+        return a.slot == b.slot and a.generation == b.generation;
+    }
+    pub fn retainNames(new: *Sample, old: Sample) void {
+        new.name = old.name;
+        new.model = old.model;
+    }
+    pub fn sameLabel(a: Sample, b: Sample) bool {
+        return std.mem.eql(u8, &a.model, &b.model) and std.mem.eql(u8, &a.name, &b.name);
+    }
+    pub fn measure(old: Sample, new: Sample, elapsed: u64) Values {
+        var values: Values = .{};
+        if ((old.flags & new.flags & 1) != 0) {
+            if (new.read_bytes >= old.read_bytes) values.first = Rate.from(new.read_bytes - old.read_bytes, elapsed);
+            if (new.write_bytes >= old.write_bytes) values.second = Rate.from(new.write_bytes - old.write_bytes, elapsed);
+        }
+        if ((old.flags & new.flags & 2) != 0 and old.activity_epoch == new.activity_epoch and new.active_ns >= old.active_ns) {
+            const active = new.active_ns - old.active_ns;
+            if (active <= elapsed) values.active_pct = share(active, elapsed);
+        }
+        return values;
     }
 };
 
