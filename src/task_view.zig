@@ -41,6 +41,15 @@ pub const View = struct {
     fn field(h: *std.hash.Wyhash, value: anytype) void {
         h.update(std.mem.asBytes(&value));
     }
+    pub fn showsRenderStats(self: *const View, t: *const Tasks, height: i32) bool {
+        if (height <= 0) return false;
+        const sections = Sections.forData(t);
+        const top = @min(@as(i32, @intCast(self.scroll.first)), @max(0, sections.total - height));
+        const bottom = top + height;
+        return (top < sections.desktop + 124 and bottom > sections.desktop + 51) or
+            (top < sections.session + 111 and bottom > sections.session + 93);
+    }
+
     pub fn changed(self: *View, t: *const Tasks, height: i32) bool {
         var h = [_]std.hash.Wyhash{std.hash.Wyhash.init(0)} ** 4;
         field(&h[0], t.windows != null);
@@ -61,7 +70,9 @@ pub const View = struct {
             field(&h[1], info.window_id);
             field(&h[1], info.exit_code);
         }
+        field(&h[2], t.render_sampled);
         field(&h[2], t.render != null);
+        field(&h[3], t.render != null);
         if (t.render) |stats| {
             field(&h[2], stats.redraws);
             field(&h[2], stats.full);
@@ -169,7 +180,7 @@ fn desktop(p: P, x: i32, y: i32, w: i32, t: *const Tasks) void {
         p.label(x, y + 72, second - 8, 21, .mono, .left, fmt(&buf, "{d}", .{c.redraws}), theme.ink, theme.bg);
         p.label(x + second, y + 72, w - second, 21, .mono, .left, fmt(&buf, "{d}", .{c.full}), theme.ink, theme.bg);
         p.label(x, y + 105, w, 12, .regular, .left, fmt(&buf, "Letzter Bereich: {s}", .{damage(c.last_damage)}), theme.sub, theme.bg);
-    } else p.label(x, y + 51, w, 14, .regular, .left, "Desktop-Renderdaten nicht verfügbar", theme.sub, theme.bg);
+    } else p.label(x, y + 51, w, 14, .regular, .left, if (t.render_sampled) "Desktop-Renderdaten nicht verfügbar" else "Desktop-Daten werden geladen …", theme.sub, theme.bg);
 }
 fn session(p: P, x: i32, y: i32, w: i32, t: *const Tasks) void {
     var buf: [96]u8 = undefined;

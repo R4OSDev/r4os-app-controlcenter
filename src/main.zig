@@ -5,6 +5,8 @@ const r4os = @import("r4os");
 const gui = r4os.gui;
 const Traffic = @import("traffic.zig").Traffic;
 const ram = @import("ram.zig");
+const chart = @import("chart.zig");
+const History = @import("history.zig").History;
 const Usage = @import("usage.zig").Usage;
 const Tasks = @import("tasks.zig").Tasks;
 const TaskView = @import("task_view.zig").View;
@@ -54,7 +56,7 @@ const App = struct {
     timer: *r4os.Timer,
     allocator: @import("std").mem.Allocator,
     usage: Usage = .{},
-    history: @import("history.zig").History = .{},
+    history: History = .{},
     network: meters.Meter(meters.Network) = .{},
     disks: meters.Meter(meters.Disk) = .{},
     client_w: i32 = 0,
@@ -169,7 +171,9 @@ const App = struct {
         if (self.tab == .usage) {
             const old_cores = self.usage.cores.items.len;
             const old_unknown = self.usage.unknown_topology;
+            const old_percent = self.usage.percent;
             const changed = self.usage.refresh(self.api, self.allocator);
+            const prior_history = self.history;
             const trend = self.history.observe(self.window.sys.monotonicNanoseconds(), self.usage.percent, self.usage.discontinuity);
             const latest = ram.Belegung.read(self.api);
             const memory_changed = !@import("std").meta.eql(self.memory, latest);
@@ -180,10 +184,11 @@ const App = struct {
             if (force or old_cores != self.usage.cores.items.len or old_unknown != self.usage.unknown_topology or self.disks.layout_changed or self.network.layout_changed or self.client_h == 0) {
                 self.paint();
             } else {
-                self.paintChanges(changed, memory_changed or traffic_changed, trend);
+                self.paintChanges(changed, old_percent != self.usage.percent, memory_changed or traffic_changed, if (trend) &prior_history else null);
             }
         } else {
             self.tasks.refresh(self.api, self.allocator);
+            if (self.task_view.showsRenderStats(&self.tasks, self.client_h)) self.tasks.refreshRender(self.api);
             const changed = self.task_view.changed(&self.tasks, self.client_h);
             if (force or changed) self.paint();
         }
@@ -260,7 +265,7 @@ const App = struct {
         var buffer: [64]u8 = undefined;
         const caption = if (self.usage.percent) |v| theme.fmt(&buffer, "{d} %", .{v}) else "–";
         p.label(x, y + 40, summary - 2, if (self.client_w < 650) 33 else 39, .mono, .left, caption, ink, paper);
-        @import("chart.zig").draw(p, &self.history, x + summary, y, w - summary);
+        chart.draw(p, &self.history, x + summary, y, w - summary);
         const n = self.usage.cores.items.len;
         p.label(x, y + 93, summary - 2, 13, .regular, .left, if (n == 1) "1 Kern" else theme.fmt(&buffer, "{d} Kerne", .{n}), theme.sub, paper);
         for (self.usage.cores.items, 0..) |core, index| {
@@ -301,19 +306,26 @@ const App = struct {
         }
     };
 
-    fn paintChanges(self: *App, cpu: bool, memory: bool, trend: bool) void {
+    fn paintChanges(self: *App, cores: bool, total: bool, memory: bool, prior_history: ?*const History) void {
         const client_w = if (self.usage_scroll.bar.maxFirst() != 0) self.client_w - 3 else self.client_w;
         const g = self.layout(client_w);
         const top = -@as(i32, @intCast(self.usage_scroll.first));
         const x = theme.rail(self.client_w) + 17;
         const w = client_w - x - 16;
-        const chart_left = theme.labelWidth(self.client_w) + 34;
+        const summary = theme.labelWidth(self.client_w);
         var damage: Damage = .{};
-        if (cpu) {
-            damage.add(x, top + 37, w, g.cpu_h - 40, self.client_h);
-        } else if (trend) {
-            damage.add(x + chart_left, top + 37, w - chart_left, 67, self.client_h);
+        if (total) damage.add(x, top + 37, summary, 53, self.client_h);
+        if (prior_history) |prior| {
+            if (chart.damage(prior, &self.history, x + summary, top, w - summary, self.client_h)) |area|
+                damage.add(area.x, area.y, area.w, area.h, self.client_h);
         }
+        // After sampling, next retains the previous core snapshot. Only the
+        // number in a changed tile needs a new set of pixels.
+        if (cores) for (self.usage.cores.items, 0..) |core, index| {
+            if (index < self.usage.next.items.len and self.usage.next.items[index].percent == core.percent) continue;
+            const i: i32 = @intCast(index);
+            damage.add(x + @mod(i, g.columns) * g.tile_w, top + 138 + @divTrunc(i, g.columns) * 46, g.tile_w - 4, 24, self.client_h);
+        };
         const ram_top = top + g.cpu_h;
         if (memory) damage.add(x, ram_top + 12, w, 76, self.client_h);
         const net_top = ram_top + resources.ram_height;

@@ -9,6 +9,7 @@ const Allocator = std.mem.Allocator;
 pub const Tasks = struct {
     windows: ?a.WindowServiceSnapshot = null,
     render: ?wire.RenderStats = null,
+    render_sampled: bool = false,
     status: a.ProgramStatus = .{},
     processes: std.ArrayList(a.ProgramInstanceSnapshot) = .empty,
     staging: std.ArrayList(a.ProgramInstanceSnapshot) = .empty,
@@ -25,6 +26,7 @@ pub const Tasks = struct {
         self.current = if (self.collect(app, allocator)) true else |_| false;
         self.windows = null;
         self.render = null;
+        self.render_sampled = false;
         var service: a.ServiceInfo = .{};
         if (sys.serviceOpen(wire.service, &service) != 0) return;
         defer _ = sys.serviceClose(service.handle);
@@ -39,6 +41,14 @@ pub const Tasks = struct {
         {
             self.windows = snapshot;
         }
+    }
+
+    pub fn refreshRender(self: *Tasks, app: *r4os.App2) void {
+        self.render_sampled = true;
+        const sys = app.system();
+        var service: a.ServiceInfo = .{};
+        if (sys.serviceOpen(wire.service, &service) != 0) return;
+        defer _ = sys.serviceClose(service.handle);
         var caller: a.ProgramProcessHandle = .{};
         if (sys.programOpenHandle(@intCast(app.raw.instance_id), &caller) != 0) return;
         const render_timeout = sys.ticksFromMilliseconds(1000);
@@ -49,6 +59,7 @@ pub const Tasks = struct {
             .deadline_tick = sys.ticks() +| render_timeout,
         });
         var response: [wire.response_size]u8 = undefined;
+        var header: a.ServiceMessageHeader = .{};
         if (sys.serviceCall(service.handle, wire.operation, &request, &header, &response, render_timeout) != response.len or header.status != 0) return;
         const value = wire.decodeResponse(&response) catch return;
         if (value.op == .render_status and value.result == 0) self.render = value.render;
