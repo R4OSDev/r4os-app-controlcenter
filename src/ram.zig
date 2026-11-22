@@ -6,7 +6,7 @@ const mb = 1024 * 1024;
 // Values are rounded at display precision so a one-page change does not
 // repaint the whole window. The two displayed parts always sum to the total.
 pub const Belegung = struct {
-    percent: u8,
+    basis_points: u16,
     used_tenths: u64,
     total_tenths: u64,
 
@@ -14,10 +14,14 @@ pub const Belegung = struct {
         if (total == 0 or free > total) return null;
         const used: u128 = total - free;
         return .{
-            .percent = @intCast(used * 100 / total),
+            .basis_points = if (used == 0) 0 else @intCast(@max(1, used * 10_000 / total)),
             .used_tenths = @intCast((used * 10 + mb / 2) / mb),
             .total_tenths = @intCast((@as(u128, total) * 10 + mb / 2) / mb),
         };
+    }
+
+    pub fn percent(self: Belegung) u8 {
+        return @intCast(self.basis_points / 100);
     }
 
     pub fn read(api: *const r4os.App2) ?Belegung {
@@ -35,8 +39,9 @@ pub fn fillColor(percent: u8) u32 {
     return 0xe95b56;
 }
 
-pub fn fillWidth(inner: i32, percent: u8) i32 {
-    return @intCast(@divTrunc(@as(i64, @max(inner, 0)) * percent, 100));
+pub fn fillWidth(inner: i32, basis_points: u16) i32 {
+    if (inner <= 0 or basis_points == 0) return 0;
+    return @intCast(@max(1, @divTrunc(@as(i64, inner) * basis_points, 10_000)));
 }
 
 pub fn amount(out: []u8, tenths: ?u64) []const u8 {
@@ -48,17 +53,20 @@ pub fn amount(out: []u8, tenths: ?u64) []const u8 {
 // the colour boundary visible even where it runs through a digit.
 pub const Caption = struct {
     value: ?u8 = null,
+    below_one: bool = false,
     width: u32 = 0,
     mask: [64 * 16]u8 = @splat(0),
 
-    pub fn draw(self: *Caption, canvas: gui.Canvas, area: gui.Rect, percent: ?u8, ink: u32) void {
-        const v = percent orelse {
+    pub fn draw(self: *Caption, canvas: gui.Canvas, area: gui.Rect, memory: ?Belegung, ink: u32) void {
+        const reading = memory orelse {
             _ = canvas.rect(.{ .x = area.x + @divTrunc(area.w - 8, 2), .y = area.y + @divTrunc(area.h, 2), .w = 8, .h = 1 }, ink);
             return;
         };
-        if (self.value != v) {
+        const v = reading.percent();
+        const small = reading.basis_points > 0 and v == 0;
+        if (self.value != v or self.below_one != small) {
             var buf: [5]u8 = undefined;
-            const digits = std.fmt.bufPrint(&buf, "{d}%", .{v}) catch return;
+            const digits = if (small) "<1%" else std.fmt.bufPrint(&buf, "{d}%", .{v}) catch return;
             @memset(&self.mask, 0);
             for (digits, 0..) |ch, index| {
                 var glyph: r4os.abi.GuiGlyphBitmap = .{};
@@ -75,6 +83,7 @@ pub const Caption = struct {
             }
             self.width = @intCast(digits.len * 16);
             self.value = v;
+            self.below_one = small;
         }
         _ = canvas.blendAlpha8(area.x + @divTrunc(area.w - @as(i32, @intCast(self.width)), 2), area.y + @divTrunc(area.h - 16, 2), self.width, 16, 64, ink, &self.mask);
     }
@@ -86,12 +95,21 @@ test "RAM colours, lengths and balances at the thresholds in both directions" {
     for (0..12) |n| {
         const i = if (n < 6) n else 11 - n;
         const v = Belegung.from(100 * mb, (100 - @as(u64, percent[i])) * mb).?;
-        try std.testing.expectEqual(percent[i], v.percent);
-        try std.testing.expectEqual(expected[i], fillColor(v.percent));
-        try std.testing.expectEqual(@as(i32, percent[i]) * 3, fillWidth(300, v.percent));
+        try std.testing.expectEqual(percent[i], v.percent());
+        try std.testing.expectEqual(expected[i], fillColor(v.percent()));
+        try std.testing.expectEqual(@as(i32, percent[i]) * 3, fillWidth(300, v.basis_points));
         try std.testing.expectEqual(@as(u64, percent[i]) * 10, v.used_tenths);
     }
     try std.testing.expect(Belegung.from(0, 0) == null);
     try std.testing.expect(Belegung.from(5, 6) == null);
-    try std.testing.expectEqual(@as(u8, 100), Belegung.from(std.math.maxInt(u64), 0).?.percent);
+    try std.testing.expectEqual(@as(u8, 100), Belegung.from(std.math.maxInt(u64), 0).?.percent());
+}
+
+test "small resident allocations stay visible at the actual bar width" {
+    const idle = Belegung.from(25_455_759_360, 25_273_973_760).?;
+    try std.testing.expectEqual(@as(u8, 0), idle.percent());
+    try std.testing.expect(idle.basis_points > 0);
+    try std.testing.expectEqual(@as(i32, 2), fillWidth(308, idle.basis_points));
+    try std.testing.expectEqual(@as(i32, 1), fillWidth(308, Belegung.from(1 << 40, (1 << 40) - 4096).?.basis_points));
+    try std.testing.expectEqual(@as(i32, 0), fillWidth(308, Belegung.from(4096, 4096).?.basis_points));
 }

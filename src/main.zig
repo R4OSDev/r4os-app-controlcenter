@@ -235,11 +235,10 @@ const App = struct {
         _ = canvas.rect(box(bar.x, bar.y + 1, 1, bar.h - 2), line);
         _ = canvas.rect(box(bar.x + bar.w - 1, bar.y + 1, 1, bar.h - 2), line);
         const inner = bar.inset(1, 1);
-        const percent: ?u8 = if (self.memory) |m| m.percent else null;
-        if (percent) |v| {
-            _ = canvas.rect(box(inner.x, inner.y, ram.fillWidth(inner.w, v), inner.h), ram.fillColor(v));
+        if (self.memory) |m| {
+            _ = canvas.rect(box(inner.x, inner.y, ram.fillWidth(inner.w, m.basis_points), inner.h), ram.fillColor(m.percent()));
         }
-        self.bar_caption.draw(canvas, inner, percent, ink);
+        self.bar_caption.draw(canvas, inner, self.memory, ink);
         const names = [_][]const u8{ "Belegt", "Frei", "Gesamt" };
         const values: [3]?u64 = if (self.memory) |m| .{ m.used_tenths, m.total_tenths - m.used_tenths, m.total_tenths } else @splat(null);
         for (names, values, 0..) |name, value, i| {
