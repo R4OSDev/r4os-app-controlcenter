@@ -1,6 +1,7 @@
 const r4os = @import("r4os");
 
 const gui = r4os.gui;
+const ram = @import("ram.zig");
 const Usage = @import("usage.zig").Usage;
 const Tasks = @import("tasks.zig").Tasks;
 const TaskView = @import("task_view.zig").View;
@@ -56,6 +57,8 @@ const App = struct {
     timer: *r4os.Timer,
     allocator: @import("std").mem.Allocator,
     usage: Usage = .{},
+    memory: ?ram.Belegung = null,
+    bar_caption: ram.Caption = .{},
     tasks: Tasks = .{},
     task_view: TaskView = .{},
     focused: bool = true,
@@ -148,7 +151,10 @@ const App = struct {
     fn refresh(self: *App, force: bool) void {
         if (self.tab == .usage) {
             const changed = self.usage.refresh(self.api, self.allocator);
-            if (changed or force) self.paint();
+            const latest = ram.Belegung.read(self.api);
+            const memory_changed = !@import("std").meta.eql(self.memory, latest);
+            self.memory = latest;
+            if (changed or memory_changed or force) self.paint();
         } else {
             self.tasks.refresh(self.api, self.allocator);
             self.paint();
@@ -175,7 +181,7 @@ const App = struct {
         const rows = @max(1, @divTrunc(n + columns - 1, columns));
         const tile_w = @min(52, @divTrunc(width, columns));
         const note_h: i32 = if (self.usage.unknown_topology) 22 else 0;
-        const tile_h = @min(45, @divTrunc(canvas.h - 12 - note_h, rows));
+        const tile_h = @max(1, @min(45, @divTrunc(canvas.h - 152 - note_h, rows)));
         const height = @max(98, rows * tile_h + note_h + 8);
         _ = canvas.rect(box(sidebar, height, canvas.w - sidebar, 1), line);
         _ = canvas.rect(box(x - 1, 0, 1, height), line);
@@ -190,11 +196,48 @@ const App = struct {
             const i: i32 = @intCast(index);
             const area = box(x + 5 + @mod(i, columns) * tile_w, 5 + @divTrunc(i, columns) * tile_h, tile_w - 4, tile_h - 4);
             cell(canvas, area, paper);
+            if (area.h < 10) continue;
             label(canvas.withFontId(r4os.abi.gui_font_builtin_id), area.inset(1, 1), percentText(core.percent, &buf), .center, ink, paper);
         }
         if (self.usage.unknown_topology or n == 0) {
             const message = if (self.usage.unknown_topology) "Kernzuordnung unbekannt" else "Keine CPU-Zeitdaten";
             label(canvas, box(x + 6, if (n == 0) 8 else rows * tile_h + 5, width, 23), message, .left, ink, paper);
+        }
+        self.paintRam(canvas, height);
+    }
+
+    fn paintRam(self: *App, canvas: Canvas, y: i32) void {
+        const x = sidebar + summary_width;
+        const left = sidebar + 8;
+        const narrow = summary_width - 16;
+        _ = canvas.rect(box(x - 1, y + 1, 1, 122), line);
+        label(canvas, box(left, y + 6, narrow, 23), "RAM", .left, ink, paper);
+        label(canvas.withFontId(r4os.abi.gui_font_builtin_id), box(left, y + 34, narrow, 21), "Durchsatz", .left, ink, paper);
+        _ = canvas.rect(box(left + 2, y + 65, 10, 1), ink);
+
+        const bar = box(x + 12, y + 12, canvas.w - x - 26, 29);
+        if (bar.w < 3) return;
+        _ = canvas.rect(box(bar.x, bar.y, bar.w, 1), line);
+        _ = canvas.rect(box(bar.x, bar.y + bar.h - 1, bar.w, 1), line);
+        _ = canvas.rect(box(bar.x, bar.y + 1, 1, bar.h - 2), line);
+        _ = canvas.rect(box(bar.x + bar.w - 1, bar.y + 1, 1, bar.h - 2), line);
+        const inner = bar.inset(1, 1);
+        const percent: ?u8 = if (self.memory) |m| m.percent else null;
+        if (percent) |v| {
+            _ = canvas.rect(box(inner.x, inner.y, ram.fillWidth(inner.w, v), inner.h), ram.fillColor(v));
+        }
+        self.bar_caption.draw(canvas, inner, percent, ink);
+        const names = [_][]const u8{ "Belegt", "Frei", "Gesamt" };
+        const values: [3]?u64 = if (self.memory) |m| .{ m.used_tenths, m.total_tenths - m.used_tenths, m.total_tenths } else @splat(null);
+        for (names, values, 0..) |name, value, i| {
+            const row = y + 49 + @as(i32, @intCast(i)) * 22;
+            var buf: [36]u8 = undefined;
+            label(canvas, box(bar.x, row, 74, 21), name, .left, ink, paper);
+            if (value != null) {
+                label(canvas, box(bar.x + 78, row, bar.w - 78, 21), ram.amount(&buf, value), .left, ink, paper);
+            } else {
+                _ = canvas.rect(box(bar.x + 80, row + 10, 10, 1), ink);
+            }
         }
     }
 

@@ -1,6 +1,6 @@
 .{
     .name = .r4os_controlcenter,
-    .version = "0.1.2",
+    .version = "0.1.3",
     .fingerprint = 0x4e0d71aa46edb2d8,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
