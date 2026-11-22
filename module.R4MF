@@ -1,7 +1,7 @@
 R4OS_MODULE_MANIFEST=2
 KIND=R4X
 NAME=CTRLCTR
-VERSION=0.1.6
+VERSION=0.1.7
 LANGUAGE=Zig
 SDK_PROFILE=r4os-zig-generation2
 SOURCE=src/main.zig
@@ -12,6 +12,7 @@ IMAGE_SCOPE=slim
 IMPORT=R4SYS:Query2:2
 IMPORT=R4DESK:Query2:2
 IMPORT=R4DRAW:Query2:2
+IMPORT=R4NET:Query2:2
 IMPORT=R4DEV:Query2:2
 META=desktop.launch=hosted
 ZIG_MODULE=desktop_check:../Desktop/Contract/desktop_check_v2.zig

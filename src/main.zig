@@ -1,3 +1,5 @@
+const std = @import("std");
+const meters = @import("meters.zig");
 const r4os = @import("r4os");
 
 const gui = r4os.gui;
@@ -10,6 +12,7 @@ const Scroll = @import("scroll.zig").Scroll;
 const Rect = gui.Rect;
 const Canvas = gui.Canvas;
 const Tab = enum { usage, tasks };
+const row_height = 72;
 const sidebar = 112;
 const summary_width = 110;
 const paper = 0xffffff;
@@ -26,6 +29,7 @@ pub fn r4_app_main(api: *r4os.App2) i32 {
     defer app.traffic.release(api);
     defer app.tasks.deinit(allocator);
     defer app.usage.deinit(allocator);
+    defer app.network.deinit(allocator);
     return app.run();
 }
 
@@ -61,6 +65,9 @@ const App = struct {
     timer: *r4os.Timer,
     allocator: @import("std").mem.Allocator,
     usage: Usage = .{},
+    network: meters.Meter(meters.Network) = .{},
+    client_w: i32 = 0,
+    client_h: i32 = 0,
     memory: ?ram.Belegung = null,
     traffic: Traffic = .{},
     bar_caption: ram.Caption = .{},
@@ -174,7 +181,12 @@ const App = struct {
             const memory_changed = !@import("std").meta.eql(self.memory, latest);
             self.memory = latest;
             const traffic_changed = self.traffic.refresh(self.api);
-            if (changed or memory_changed or traffic_changed or force) self.paint();
+            self.network.refresh(self.api, self.allocator);
+            if (force or self.network.layout_changed or self.client_h == 0) {
+                self.paint();
+            } else {
+                self.paintChanges(changed, memory_changed or traffic_changed);
+            }
         } else {
             self.tasks.refresh(self.api, self.allocator);
             self.paint();
@@ -184,6 +196,7 @@ const App = struct {
     fn updateTimer(self: *App) void {
         self.timer.cancel();
         self.usage.reset();
+        self.network.fresh = true;
         if (!self.focused) return;
         self.refresh(true);
         _ = self.timer.start(&self.window.sys, r4os.TimerId.init(1), .{ .nanoseconds = 1_000_000_000 }, true);
@@ -201,6 +214,10 @@ const App = struct {
         content_h: i32,
     };
 
+    fn sectionHeight(count: usize) i32 {
+        return @as(i32, @intCast(@max(1, count))) * row_height;
+    }
+
     fn layout(self: *const App, client_w: i32) Layout {
         const width = @max(1, client_w - sidebar - summary_width - 8);
         const n: i32 = @intCast(self.usage.cores.items.len);
@@ -208,7 +225,13 @@ const App = struct {
         const rows = @max(1, @divTrunc(n + columns - 1, columns));
         const note_h: i32 = if (self.usage.unknown_topology) 22 else 0;
         const cpu_h = @max(98, rows * 45 + note_h + 8);
-        return .{ .columns = columns, .rows = rows, .tile_w = @min(52, @divTrunc(width, columns)), .cpu_h = cpu_h, .content_h = cpu_h + 124 };
+        return .{
+            .columns = columns,
+            .rows = rows,
+            .tile_w = @min(52, @divTrunc(width, columns)),
+            .cpu_h = cpu_h,
+            .content_h = cpu_h + 124 + sectionHeight(self.network.rows.items.len),
+        };
     }
 
     fn paintUsage(self: *App, frame_canvas: Canvas) void {
@@ -224,6 +247,7 @@ const App = struct {
         if (top + layout_.cpu_h >= 0) self.paintCpu(canvas, layout_, top);
         const ram_top = top + layout_.cpu_h;
         if (ram_top < canvas.h and ram_top + 124 > 0) self.paintRam(canvas, ram_top);
+        self.paintNetwork(canvas, ram_top + 124);
         if (overflow) {
             var scratch: [20]u8 = undefined;
             _ = self.usage_scroll.bar.draw(frame_canvas, &scratch);
@@ -301,13 +325,91 @@ const App = struct {
         }
     }
 
+    fn deviceHeader(self: *App, c: Canvas, y: i32, section: []const u8, first: bool, name: []const u8, status: []const u8) void {
+        const x = sidebar + summary_width;
+        _ = c.rect(box(sidebar, y, c.w - sidebar, 1), line);
+        _ = c.rect(box(x - 1, y, 1, row_height), line);
+        if (first) label(c, box(sidebar + 8, y + 3, summary_width - 14, 24), section, .left, ink, paper);
+        const small = c.withFontId(r4os.abi.gui_font_builtin_id);
+        const status_w = if (status.len == 0) @as(i32, 0) else @as(i32, @intCast(status.len)) * 8 + 8;
+        label(c.withFontId(self.fonts.body), box(x + 8, y + 3, c.w - x - 16 - status_w, 22), name, .left, ink, paper);
+        label(small, box(c.w - 8 - status_w, y + 3, status_w, 22), status, .right, ink, paper);
+    }
+
+    fn deviceRate(c: Canvas, y: i32, name: []const u8, rate: ?meters.Rate, percent: ?u32) void {
+        const x = sidebar + summary_width + 8;
+        const small = c.withFontId(r4os.abi.gui_font_builtin_id);
+        var buf: [32]u8 = undefined;
+        label(small, box(x, y, 80, 19), name, .left, ink, paper);
+        label(small, box(x + 84, y, c.w - x - 150, 19), meters.Rate.write(rate, &buf), .left, ink, paper);
+        if (percent) |v| {
+            const text = if (v == 0 and rate != null and rate.?.tenths != 0) "<1 %" else std.fmt.bufPrint(&buf, "{d} %", .{v}) catch "--";
+            label(small, box(c.w - 72, y, 64, 19), text, .right, ink, paper);
+        }
+    }
+
+    fn paintNetwork(self: *App, c: Canvas, top: i32) void {
+        if (self.network.rows.items.len == 0 and top < c.h and top + row_height > 0)
+            self.deviceHeader(c, top, "Netzwerk", true, if (self.network.available) "Kein Adapter" else "Nicht verfügbar", "");
+        for (self.network.rows.items, 0..) |row, i| {
+            const y = top + @as(i32, @intCast(i)) * row_height;
+            if (y >= c.h) break;
+            if (y + row_height <= 0) continue;
+            const sample = row.sample;
+            var buf: [72]u8 = undefined;
+            const name = std.fmt.bufPrint(&buf, "{s}  #{d}", .{ std.mem.sliceTo(&sample.name, 0), sample.interface_id }) catch "Adapter";
+            self.deviceHeader(c, y, "Netzwerk", i == 0, name, switch (sample.link) {
+                1 => "Getrennt",
+                2 => "Verbunden",
+                else => "Link unbekannt",
+            });
+            deviceRate(c, y + 25, "Empfang", row.values.first, row.values.first_pct);
+            deviceRate(c, y + 46, "Senden", row.values.second, row.values.second_pct);
+        }
+    }
+
+    const Damage = struct {
+        lo: i32,
+        hi: i32 = 0,
+        fn add(self: *Damage, top: i32, bottom: i32, h: i32) void {
+            if (top >= h or bottom <= 0) return;
+            self.lo = @min(self.lo, @max(0, top));
+            self.hi = @max(self.hi, @min(h, bottom));
+        }
+    };
+    fn paintChanges(self: *App, cpu: bool, memory: bool) void {
+        const g = self.layout(if (self.usage_scroll.bar.maxFirst() != 0) self.client_w - 17 else self.client_w);
+        const top = -@as(i32, @intCast(self.usage_scroll.first));
+        var damage = Damage{ .lo = self.client_h };
+        if (cpu) damage.add(top, top + g.cpu_h + 1, self.client_h);
+        if (memory) damage.add(top + g.cpu_h, top + g.cpu_h + 124, self.client_h);
+        const network_top = top + g.cpu_h + 124;
+        for (self.network.rows.items, 0..) |row, i| {
+            if (row.changed) {
+                const y = network_top + @as(i32, @intCast(i)) * row_height;
+                damage.add(y, y + row_height, self.client_h);
+            }
+        }
+        if (damage.hi > damage.lo) self.paintRegion(.{ .x = sidebar, .y = damage.lo, .w = @intCast(self.client_w - sidebar), .h = @intCast(damage.hi - damage.lo) });
+    }
+
     fn paint(self: *App) void {
-        var frame = switch (self.window.beginPaint()) {
+        self.paintRegion(null);
+    }
+
+    fn paintRegion(self: *App, region: ?r4os.abi.DisplayDamageRect) void {
+        const open = if (region) |area| switch (self.window.beginPaintReplace(self.client_w, self.client_h, &.{area})) {
+            .paint => |frame| @as(@TypeOf(self.window.beginPaint()), .{ .paint = frame }),
+            .failure => self.window.beginPaint(),
+        } else self.window.beginPaint();
+        var frame = switch (open) {
             .paint => |value| value,
             .failure => return,
         };
         defer frame.discard();
         const canvas = frame.canvas.withFontId(self.fonts.body);
+        self.client_w = canvas.w;
+        self.client_h = canvas.h;
         _ = canvas.clear(paper);
         _ = canvas.rect(box(0, 0, sidebar, canvas.h), face);
         _ = canvas.rect(box(sidebar - 1, 0, 1, canvas.h), line);
