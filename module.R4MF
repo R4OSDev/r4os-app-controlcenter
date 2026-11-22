@@ -1,7 +1,7 @@
 R4OS_MODULE_MANIFEST=2
 KIND=R4X
 NAME=CTRLCTR
-VERSION=0.1.8
+VERSION=0.1.9
 LANGUAGE=Zig
 SDK_PROFILE=r4os-zig-generation2
 SOURCE=src/main.zig
@@ -14,5 +14,8 @@ IMPORT=R4DESK:Query2:2
 IMPORT=R4DRAW:Query2:2
 IMPORT=R4NET:Query2:2
 IMPORT=R4DEV:Query2:2
+IMPORT=R4FONT:Query2:2
+IMPORT=R4FONT:API_V1:1
 META=desktop.launch=hosted
 ZIG_MODULE=desktop_check:../Desktop/Contract/desktop_check_v2.zig
+ZIG_MODULE=app_fonts:../../Libraries/R4FONT/Bindings/Zig/app_fonts.zig

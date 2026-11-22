@@ -8,6 +8,7 @@ const ram = @import("ram.zig");
 const Usage = @import("usage.zig").Usage;
 const Tasks = @import("tasks.zig").Tasks;
 const TaskView = @import("task_view.zig").View;
+const Text = @import("typography.zig").Text;
 const Scroll = @import("scroll.zig").Scroll;
 const Rect = gui.Rect;
 const Canvas = gui.Canvas;
@@ -25,7 +26,9 @@ pub fn r4_app_main(api: *r4os.App2) i32 {
     var timers = [_]r4os.Timer{.{}};
     var window = api.window(&timers) orelse return r4os.abi.err_no_group;
     const allocator = api.allocator() orelse return r4os.abi.err_no_group;
-    var app = App{ .api = api, .window = &window, .timer = &timers[0], .allocator = allocator, .fonts = gui.FontSet.system(&window.draw) };
+    var text = Text.init(api, &window, allocator);
+    defer text.deinit();
+    var app = App{ .text = &text, .api = api, .window = &window, .timer = &timers[0], .allocator = allocator, .fonts = gui.FontSet.system(&window.draw) };
     defer app.traffic.release(api);
     defer app.tasks.deinit(allocator);
     defer app.usage.deinit(allocator);
@@ -78,6 +81,7 @@ const App = struct {
     usage_scroll: Scroll = .{ .stride = 18 },
     focused: bool = true,
     fonts: gui.FontSet,
+    text: *Text,
     tab: Tab = .usage,
     pressed: ?Tab = null,
 
@@ -92,6 +96,7 @@ const App = struct {
                     .resize => self.paint(),
                     .font_changed => {
                         self.fonts = gui.FontSet.system(&self.window.draw);
+                        self.text.system = self.fonts;
                         self.paint();
                     },
                     .focus_gained => {
@@ -270,13 +275,11 @@ const App = struct {
         const height = geometry.cpu_h;
         _ = canvas.rect(box(sidebar, y + height, canvas.w - sidebar, 1), line);
         _ = canvas.rect(box(x - 1, y, 1, height), line);
-        label(canvas, box(sidebar + 8, y + 4, summary_width - 16, 23), "CPU", .left, ink, paper);
+        self.text.draw(canvas, box(sidebar + 8, y + 4, summary_width - 16, 23), 16, .semibold, .left, "CPU", ink, paper);
         var buf: [5]u8 = undefined;
         const caption = percentText(self.usage.percent, &buf);
         const summary = box(sidebar + 3, y + 25, summary_width - 6, 65);
-        const display = canvas.withFontId(self.fonts.display);
-        const large = if (display.textWidthZ(caption.ptr) + 4 <= summary.w) display else canvas.withFontId(self.fonts.heading);
-        label(large, summary, caption, .center, ink, paper);
+        self.text.draw(canvas, summary, 30, .mono, .center, caption, ink, paper);
         for (self.usage.cores.items, 0..) |core, index| {
             const i: i32 = @intCast(index);
             const area = box(x + 5 + @mod(i, columns) * tile_w, y + 5 + @divTrunc(i, columns) * tile_h, tile_w - 4, tile_h - 4);
@@ -447,7 +450,7 @@ const App = struct {
             const area = navRect(tab);
             const bg: u32 = if (tab == self.tab) selected else face;
             cell(canvas, area, bg);
-            label(frame.canvas.withFontId(r4os.abi.gui_font_builtin_id), area.inset(2, 1), if (tab == .usage) "Auslastung" else "Tasks", .center, if (tab == self.tab) paper else ink, bg);
+            self.text.draw(canvas, area.inset(2, 4), 13, if (tab == self.tab) .semibold else .regular, .center, if (tab == .usage) "Auslastung" else "Tasks", if (tab == self.tab) paper else ink, bg);
         }
         if (self.tab == .usage) {
             self.paintUsage(canvas);

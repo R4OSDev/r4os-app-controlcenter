@@ -10,5 +10,7 @@ pub fn build(b: *std.Build) void {
     const sdk_dep = b.dependencyFromBuildZig(sdk_build, .{});
     const sdk = sdk_build.sdk(b, sdk_dep, .{});
     const desktop_wire = b.dependency("r4os_r4desk", .{ .@"contract-only" = true }).path("Contract/desktop_check_v2.zig");
-    _ = sdk.addR4MFWithOptions(b.path("module.R4MF"), .{ .zig_module_roots = &.{desktop_wire} });
+    const libraries = b.lazyImport(@This(), "r4os_libraries") orelse return;
+    const fonts = b.dependencyFromBuildZig(libraries, .{}).namedLazyPath("r4font_app_fonts");
+    _ = sdk.addR4MFWithOptions(b.path("module.R4MF"), .{ .zig_module_roots = &.{ desktop_wire, fonts } });
 }
