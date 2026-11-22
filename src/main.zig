@@ -1,6 +1,7 @@
 const r4os = @import("r4os");
 
 const gui = r4os.gui;
+const Traffic = @import("traffic.zig").Traffic;
 const ram = @import("ram.zig");
 const Usage = @import("usage.zig").Usage;
 const Tasks = @import("tasks.zig").Tasks;
@@ -21,6 +22,7 @@ pub fn r4_app_main(api: *r4os.App2) i32 {
     var window = api.window(&timers) orelse return r4os.abi.err_no_group;
     const allocator = api.allocator() orelse return r4os.abi.err_no_group;
     var app = App{ .api = api, .window = &window, .timer = &timers[0], .allocator = allocator, .fonts = gui.FontSet.system(&window.draw) };
+    defer app.traffic.release(api);
     defer app.tasks.deinit(allocator);
     defer app.usage.deinit(allocator);
     return app.run();
@@ -58,6 +60,7 @@ const App = struct {
     allocator: @import("std").mem.Allocator,
     usage: Usage = .{},
     memory: ?ram.Belegung = null,
+    traffic: Traffic = .{},
     bar_caption: ram.Caption = .{},
     tasks: Tasks = .{},
     task_view: TaskView = .{},
@@ -80,10 +83,13 @@ const App = struct {
                         self.paint();
                     },
                     .focus_gained => {
-                        self.focused = true;
-                        self.updateTimer();
+                        if (!self.focused) {
+                            self.focused = true;
+                            self.updateTimer();
+                        }
                     },
                     .focus_lost => {
+                        self.traffic.release(self.api);
                         self.focused = false;
                         self.timer.cancel();
                         self.pressed = null;
@@ -144,6 +150,7 @@ const App = struct {
 
     fn select(self: *App, tab: Tab) void {
         if (self.tab == tab) return;
+        if (self.tab == .usage) self.traffic.release(self.api);
         self.tab = tab;
         self.updateTimer();
     }
@@ -154,7 +161,8 @@ const App = struct {
             const latest = ram.Belegung.read(self.api);
             const memory_changed = !@import("std").meta.eql(self.memory, latest);
             self.memory = latest;
-            if (changed or memory_changed or force) self.paint();
+            const traffic_changed = self.traffic.refresh(self.api);
+            if (changed or memory_changed or traffic_changed or force) self.paint();
         } else {
             self.tasks.refresh(self.api, self.allocator);
             self.paint();
@@ -213,7 +221,12 @@ const App = struct {
         _ = canvas.rect(box(x - 1, y + 1, 1, 122), line);
         label(canvas, box(left, y + 6, narrow, 23), "RAM", .left, ink, paper);
         label(canvas.withFontId(r4os.abi.gui_font_builtin_id), box(left, y + 34, narrow, 21), "Durchsatz", .left, ink, paper);
-        _ = canvas.rect(box(left + 2, y + 65, 10, 1), ink);
+        if (self.traffic.display) |rate| {
+            var buf: [24]u8 = undefined;
+            label(canvas.withFontId(r4os.abi.gui_font_builtin_id), box(left, y + 54, narrow, 23), rate.text(&buf), .left, ink, paper);
+        } else {
+            _ = canvas.rect(box(left + 2, y + 65, 10, 1), ink);
+        }
 
         const bar = box(x + 12, y + 12, canvas.w - x - 26, 29);
         if (bar.w < 3) return;
