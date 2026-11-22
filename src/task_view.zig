@@ -29,38 +29,7 @@ fn damage(kind: u8) []const u8 {
     };
 }
 pub const View = struct {
-    first: usize = 0,
-    bar: gui.Scrollbar = .{ .rect = .{} },
-    thumb_y: ?i32 = null,
-
-    pub fn key(self: *View, k: u8) void {
-        self.first = switch (k) {
-            gui.Key.up => self.first -| 1,
-            gui.Key.down => self.first +| 1,
-            gui.Key.page_up => self.first -| self.bar.visible_items,
-            gui.Key.page_down => self.first +| self.bar.visible_items,
-            gui.Key.home => 0,
-            gui.Key.end => self.bar.maxFirst(),
-            else => self.first,
-        };
-        self.first = @min(self.first, self.bar.maxFirst());
-    }
-
-    pub fn mouseDown(self: *View, x: i32, y: i32) void {
-        if (!self.bar.rect.contains(x, y)) return;
-        const part = self.bar.partAt(x, y);
-        if (part == .thumb) {
-            self.thumb_y = y - self.bar.thumbRect().y;
-        } else self.first = self.bar.step(part).first_index;
-    }
-    pub fn drag(self: *View, y: i32) void {
-        const offset = self.thumb_y orelse return;
-        const track = self.bar.trackRect();
-        const travel = track.h - self.bar.thumbRect().h;
-        if (travel <= 0) return;
-        const position: usize = @intCast(std.math.clamp(y - offset - track.y, 0, travel));
-        self.first = position * self.bar.maxFirst() / @as(usize, @intCast(travel));
-    }
+    scroll: @import("scroll.zig").Scroll = .{},
 
     pub fn paint(self: *View, canvas: gui.Canvas, left: i32, tasks: *const Tasks) void {
         const x = left + 9;
@@ -78,12 +47,10 @@ pub const View = struct {
         const window_count: usize = if (tasks.windows) |*s| s.status.window_count else 0;
         const window_lines = @max(window_count, 1);
         const proc_lines = @max(tasks.processes.items.len, 1);
-        self.bar = .{ .rect = .{ .x = canvas.w - 17, .y = 47, .w = 15, .h = @max(1, footer - 47) }, .first_index = self.first, .total_items = 2 + window_lines + proc_lines, .visible_items = visible };
-        self.first = self.bar.clampedFirst();
-        self.bar.first_index = self.first;
+        self.scroll.layout(.{ .x = canvas.w - 17, .y = 47, .w = 15, .h = @max(1, footer - 47) }, 2 + window_lines + proc_lines, visible);
         const content = w - 16;
-        for (0..@min(visible, self.bar.total_items - self.first)) |screen_row| {
-            const row = screen_row + self.first;
+        for (0..@min(visible, self.scroll.bar.total_items - self.scroll.first)) |screen_row| {
+            const row = screen_row + self.scroll.first;
             const y = 51 + @as(i32, @intCast(screen_row)) * line_h;
             if (row == 0) {
                 _ = canvas.rect(.{ .x = x - 2, .y = y - 2, .w = content, .h = line_h }, selected);
@@ -118,7 +85,7 @@ pub const View = struct {
             } else text(canvas, x, y, content, if (tasks.current) "Keine Programme" else "Programmdaten nicht verfügbar", muted, paper);
         }
         var scratch: [64]u8 = undefined;
-        _ = canvas.scrollbar(self.bar, &scratch);
+        _ = canvas.scrollbar(self.scroll.bar, &scratch);
         _ = canvas.rect(.{ .x = left, .y = footer, .w = canvas.w - left, .h = 1 }, muted);
         if (tasks.render) |c| {
             text(canvas, x, footer + 6, w, formatted(&buf, "Desktop: {d} Neuzeichnungen    {d} Vollbilder", .{ c.redraws, c.full }), ink, paper);

@@ -6,6 +6,7 @@ const ram = @import("ram.zig");
 const Usage = @import("usage.zig").Usage;
 const Tasks = @import("tasks.zig").Tasks;
 const TaskView = @import("task_view.zig").View;
+const Scroll = @import("scroll.zig").Scroll;
 const Rect = gui.Rect;
 const Canvas = gui.Canvas;
 const Tab = enum { usage, tasks };
@@ -44,6 +45,7 @@ fn tabAt(x: i32, y: i32) ?Tab {
 }
 
 fn label(canvas: Canvas, area: Rect, value: []const u8, alignment: gui.Align, fg: u32, bg: u32) void {
+    if (area.y + area.h <= 0 or area.y >= canvas.h) return;
     var scratch: [160]u8 = undefined;
     _ = canvas.label(.{ .rect = area, .text = value, .alignment = alignment, .fg = fg, .bg = bg }, &scratch);
 }
@@ -64,6 +66,7 @@ const App = struct {
     bar_caption: ram.Caption = .{},
     tasks: Tasks = .{},
     task_view: TaskView = .{},
+    usage_scroll: Scroll = .{ .stride = 18 },
     focused: bool = true,
     fonts: gui.FontSet,
     tab: Tab = .usage,
@@ -71,7 +74,7 @@ const App = struct {
 
     fn run(self: *App) i32 {
         _ = self.window.setTitle("Control Center");
-        _ = self.window.setMinimumSize(558, 332);
+        _ = self.window.setMinimumSize(558, 172);
         self.updateTimer();
         while (!self.window.sys.programShouldClose()) {
             switch (self.window.waitMessage(r4os.time_contract.timeoutForever())) {
@@ -93,38 +96,38 @@ const App = struct {
                         self.focused = false;
                         self.timer.cancel();
                         self.pressed = null;
-                        self.task_view.thumb_y = null;
+                        self.scroller().thumb_y = null;
                     },
                     .input_reset => {
                         self.pressed = null;
-                        self.task_view.thumb_y = null;
+                        self.scroller().thumb_y = null;
                     },
                     .timer => {
                         if (self.focused) self.refresh(false);
                     },
                     .wheel => |wheel| {
-                        if (self.tab == .tasks) {
-                            self.task_view.first = self.task_view.bar.wheel(wheel.delta).first_index;
-                            self.paint();
-                        }
+                        if (wheel.x >= sidebar and wheel.delta != 0)
+                            self.scrollKey(if (wheel.delta > 0) gui.Key.up else gui.Key.down);
                     },
                     .mouse => |mouse| switch (mouse.action) {
                         .down => {
                             self.pressed = tabAt(mouse.x, mouse.y);
-                            if (self.pressed == null and self.tab == .tasks) {
-                                self.task_view.mouseDown(mouse.x, mouse.y);
-                                self.paint();
+                            if (self.pressed == null and self.scroller().bar.rect.contains(mouse.x, mouse.y)) {
+                                const old = self.scroller().first;
+                                self.scroller().mouseDown(mouse.x, mouse.y);
+                                if (old != self.scroller().first) self.paint();
                             }
                         },
                         .up => {
                             const tab = tabAt(mouse.x, mouse.y);
                             if (tab != null and tab == self.pressed) self.select(tab.?);
                             self.pressed = null;
-                            self.task_view.thumb_y = null;
+                            self.scroller().thumb_y = null;
                         },
-                        .move => if (self.tab == .tasks and self.task_view.thumb_y != null) {
-                            self.task_view.drag(mouse.y);
-                            self.paint();
+                        .move => if (self.scroller().thumb_y != null) {
+                            const old = self.scroller().first;
+                            self.scroller().drag(mouse.y);
+                            if (old != self.scroller().first) self.paint();
                         },
                     },
                     .key => |key| switch (key.key) {
@@ -132,10 +135,7 @@ const App = struct {
                         gui.Key.left => self.select(.usage),
                         gui.Key.right => self.select(.tasks),
                         gui.Key.up, gui.Key.down, gui.Key.home, gui.Key.end, gui.Key.page_up, gui.Key.page_down => {
-                            if (self.tab == .tasks) {
-                                self.task_view.key(key.key);
-                                self.paint();
-                            }
+                            self.scrollKey(key.key);
                         },
                         else => {},
                     },
@@ -148,9 +148,21 @@ const App = struct {
         return 0;
     }
 
+    fn scroller(self: *App) *Scroll {
+        return if (self.tab == .usage) &self.usage_scroll else &self.task_view.scroll;
+    }
+
+    fn scrollKey(self: *App, key: u8) void {
+        const scroll = self.scroller();
+        const old = scroll.first;
+        scroll.key(key);
+        if (old != scroll.first) self.paint();
+    }
+
     fn select(self: *App, tab: Tab) void {
         if (self.tab == tab) return;
         if (self.tab == .usage) self.traffic.release(self.api);
+        self.scroller().thumb_y = null;
         self.tab = tab;
         self.updateTimer();
     }
@@ -181,37 +193,73 @@ const App = struct {
         return if (value) |v| @import("std").fmt.bufPrintZ(buf, "{d}%", .{v}) catch "--" else "--";
     }
 
-    fn paintUsage(self: *App, canvas: Canvas) void {
-        const x = sidebar + summary_width;
-        const width = canvas.w - x - 8;
+    const Layout = struct {
+        columns: i32,
+        rows: i32,
+        tile_w: i32,
+        cpu_h: i32,
+        content_h: i32,
+    };
+
+    fn layout(self: *const App, client_w: i32) Layout {
+        const width = @max(1, client_w - sidebar - summary_width - 8);
         const n: i32 = @intCast(self.usage.cores.items.len);
         const columns = @max(1, @min(@divTrunc(width, 48), @divTrunc(n + 1, 2)));
         const rows = @max(1, @divTrunc(n + columns - 1, columns));
-        const tile_w = @min(52, @divTrunc(width, columns));
         const note_h: i32 = if (self.usage.unknown_topology) 22 else 0;
-        const tile_h = @max(1, @min(45, @divTrunc(canvas.h - 152 - note_h, rows)));
-        const height = @max(98, rows * tile_h + note_h + 8);
-        _ = canvas.rect(box(sidebar, height, canvas.w - sidebar, 1), line);
-        _ = canvas.rect(box(x - 1, 0, 1, height), line);
-        label(canvas, box(sidebar + 8, 4, summary_width - 16, 23), "CPU", .left, ink, paper);
+        const cpu_h = @max(98, rows * 45 + note_h + 8);
+        return .{ .columns = columns, .rows = rows, .tile_w = @min(52, @divTrunc(width, columns)), .cpu_h = cpu_h, .content_h = cpu_h + 124 };
+    }
+
+    fn paintUsage(self: *App, frame_canvas: Canvas) void {
+        var canvas = frame_canvas;
+        var layout_ = self.layout(canvas.w);
+        const overflow = layout_.content_h > canvas.h;
+        if (overflow) {
+            canvas.w -= 17;
+            layout_ = self.layout(canvas.w);
+        }
+        self.usage_scroll.layout(if (overflow) box(canvas.w + 1, 0, 15, canvas.h) else .{}, @intCast(layout_.content_h), @intCast(canvas.h));
+        const top = -@as(i32, @intCast(self.usage_scroll.first));
+        if (top + layout_.cpu_h >= 0) self.paintCpu(canvas, layout_, top);
+        const ram_top = top + layout_.cpu_h;
+        if (ram_top < canvas.h and ram_top + 124 > 0) self.paintRam(canvas, ram_top);
+        if (overflow) {
+            var scratch: [20]u8 = undefined;
+            _ = self.usage_scroll.bar.draw(frame_canvas, &scratch);
+        }
+    }
+
+    fn paintCpu(self: *App, canvas: Canvas, geometry: Layout, y: i32) void {
+        const x = sidebar + summary_width;
+        const width = canvas.w - x - 8;
+        const n = self.usage.cores.items.len;
+        const columns = geometry.columns;
+        const rows = geometry.rows;
+        const tile_w = geometry.tile_w;
+        const tile_h = 45;
+        const height = geometry.cpu_h;
+        _ = canvas.rect(box(sidebar, y + height, canvas.w - sidebar, 1), line);
+        _ = canvas.rect(box(x - 1, y, 1, height), line);
+        label(canvas, box(sidebar + 8, y + 4, summary_width - 16, 23), "CPU", .left, ink, paper);
         var buf: [5]u8 = undefined;
         const caption = percentText(self.usage.percent, &buf);
-        const summary = box(sidebar + 3, 25, summary_width - 6, 65);
+        const summary = box(sidebar + 3, y + 25, summary_width - 6, 65);
         const display = canvas.withFontId(self.fonts.display);
         const large = if (display.textWidthZ(caption.ptr) + 4 <= summary.w) display else canvas.withFontId(self.fonts.heading);
         label(large, summary, caption, .center, ink, paper);
         for (self.usage.cores.items, 0..) |core, index| {
             const i: i32 = @intCast(index);
-            const area = box(x + 5 + @mod(i, columns) * tile_w, 5 + @divTrunc(i, columns) * tile_h, tile_w - 4, tile_h - 4);
+            const area = box(x + 5 + @mod(i, columns) * tile_w, y + 5 + @divTrunc(i, columns) * tile_h, tile_w - 4, tile_h - 4);
+            if (area.y >= canvas.h or area.y + area.h <= 0) continue;
             cell(canvas, area, paper);
             if (area.h < 10) continue;
             label(canvas.withFontId(r4os.abi.gui_font_builtin_id), area.inset(1, 1), percentText(core.percent, &buf), .center, ink, paper);
         }
         if (self.usage.unknown_topology or n == 0) {
             const message = if (self.usage.unknown_topology) "Kernzuordnung unbekannt" else "Keine CPU-Zeitdaten";
-            label(canvas, box(x + 6, if (n == 0) 8 else rows * tile_h + 5, width, 23), message, .left, ink, paper);
+            label(canvas, box(x + 6, y + (if (n == 0) @as(i32, 8) else rows * tile_h + 5), width, 23), message, .left, ink, paper);
         }
-        self.paintRam(canvas, height);
     }
 
     fn paintRam(self: *App, canvas: Canvas, y: i32) void {
