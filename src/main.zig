@@ -26,7 +26,7 @@ pub fn r4_app_main(api: *r4os.App2) i32 {
     const allocator = api.allocator() orelse return r4os.abi.err_no_group;
     var text = Text.init(api, &window, allocator);
     defer text.deinit();
-    var app = App{ .text = &text, .api = api, .window = &window, .timer = &timers[0], .allocator = allocator, .fonts = gui.FontSet.system(&window.draw) };
+    var app = App{ .text = &text, .api = api, .window = &window, .timer = &timers[0], .allocator = allocator };
     defer app.traffic.release(api);
     defer app.tasks.deinit(allocator);
     defer app.usage.deinit(allocator);
@@ -65,7 +65,6 @@ const App = struct {
     task_view: TaskView = .{},
     usage_scroll: Scroll = .{ .stride = 18, .compact = true },
     focused: bool = true,
-    fonts: gui.FontSet,
     text: *Text,
     tab: Tab = .usage,
     pressed: ?Tab = null,
@@ -80,8 +79,7 @@ const App = struct {
                     .close => return 0,
                     .resize => self.paint(),
                     .font_changed => {
-                        self.fonts = gui.FontSet.system(&self.window.draw);
-                        self.text.system = self.fonts;
+                        self.text.system = gui.FontSet.system(&self.window.draw);
                         self.paint();
                     },
                     .focus_gained => {
@@ -186,7 +184,8 @@ const App = struct {
             }
         } else {
             self.tasks.refresh(self.api, self.allocator);
-            self.paint();
+            const changed = self.task_view.changed(&self.tasks, self.client_h);
+            if (force or changed) self.paint();
         }
     }
 
@@ -344,7 +343,7 @@ const App = struct {
             .failure => return,
         };
         defer frame.discard();
-        const canvas = frame.canvas.withFontId(self.fonts.body);
+        const canvas = frame.canvas;
         self.client_w = canvas.w;
         self.client_h = canvas.h;
         _ = canvas.clear(paper);
@@ -365,7 +364,7 @@ const App = struct {
         if (self.tab == .usage) {
             self.paintUsage(canvas);
         } else {
-            self.task_view.paint(frame.canvas.withFontId(r4os.abi.gui_font_builtin_id), sidebar, &self.tasks);
+            self.task_view.paint(p, sidebar, &self.tasks);
         }
         _ = frame.present();
     }
