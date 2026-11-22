@@ -66,6 +66,7 @@ const App = struct {
     timer: *r4os.Timer,
     allocator: @import("std").mem.Allocator,
     usage: Usage = .{},
+    history: @import("history.zig").History = .{},
     network: meters.Meter(meters.Network) = .{},
     disks: meters.Meter(meters.Disk) = .{},
     client_w: i32 = 0,
@@ -181,17 +182,20 @@ const App = struct {
 
     fn refresh(self: *App, force: bool) void {
         if (self.tab == .usage) {
+            const old_cores = self.usage.cores.items.len;
+            const old_unknown = self.usage.unknown_topology;
             const changed = self.usage.refresh(self.api, self.allocator);
+            const trend = self.history.observe(self.window.sys.monotonicNanoseconds(), self.usage.percent, self.usage.discontinuity);
             const latest = ram.Belegung.read(self.api);
             const memory_changed = !@import("std").meta.eql(self.memory, latest);
             self.memory = latest;
             const traffic_changed = self.traffic.refresh(self.api);
             self.network.refresh(self.api, self.allocator);
             self.disks.refresh(self.api, self.allocator);
-            if (force or self.disks.layout_changed or self.network.layout_changed or self.client_h == 0) {
+            if (force or old_cores != self.usage.cores.items.len or old_unknown != self.usage.unknown_topology or self.disks.layout_changed or self.network.layout_changed or self.client_h == 0) {
                 self.paint();
             } else {
-                self.paintChanges(changed, memory_changed or traffic_changed);
+                self.paintChanges(changed, memory_changed or traffic_changed, trend);
             }
         } else {
             self.tasks.refresh(self.api, self.allocator);
@@ -202,6 +206,7 @@ const App = struct {
     fn updateTimer(self: *App) void {
         self.timer.cancel();
         self.usage.reset();
+        self.history.pause();
         self.network.fresh = true;
         self.disks.fresh = true;
         if (!self.focused) return;
@@ -228,7 +233,8 @@ const App = struct {
     fn layout(self: *const App, client_w: i32) Layout {
         const width = @max(1, client_w - theme.rail(self.client_w) - 33);
         const n: i32 = @intCast(self.usage.cores.items.len);
-        const columns = @max(1, @min(@max(1, n), @divTrunc(width + 4, 51)));
+        const tile_min = 48 + @divTrunc(std.math.clamp(client_w - 558, 0, 194) * 22, 194);
+        const columns = @max(1, @divTrunc(width + 4, tile_min));
         const rows = @max(1, @divTrunc(n + columns - 1, columns));
         const note_h: i32 = if (self.usage.unknown_topology or n == 0) 20 else 0;
         const cpu_h = 134 + rows * 46 + note_h;
@@ -271,6 +277,7 @@ const App = struct {
         var buffer: [64]u8 = undefined;
         const caption = if (self.usage.percent) |v| theme.fmt(&buffer, "{d} %", .{v}) else "–";
         p.label(x, y + 40, summary - 2, if (self.client_w < 650) 33 else 39, .mono, .left, caption, ink, paper);
+        @import("chart.zig").draw(p, &self.history, x + summary, y, w - summary);
         const n = self.usage.cores.items.len;
         p.label(x, y + 93, summary - 2, 13, .regular, .left, if (n == 1) "1 Kern" else theme.fmt(&buffer, "{d} Kerne", .{n}), theme.sub, paper);
         for (self.usage.cores.items, 0..) |core, index| {
@@ -410,10 +417,11 @@ const App = struct {
         };
     }
 
-    fn paintChanges(self: *App, cpu: bool, memory: bool) void {
+    fn paintChanges(self: *App, cpu: bool, memory: bool, trend: bool) void {
         const g = self.layout(if (self.usage_scroll.bar.maxFirst() != 0) self.client_w - 3 else self.client_w);
         const top = -@as(i32, @intCast(self.usage_scroll.first));
         var damage = Damage{ .lo = self.client_h };
+        if (trend) damage.add(top + 37, top + 104, self.client_h);
         if (cpu) damage.add(top, top + g.cpu_h + 1, self.client_h);
         if (memory) damage.add(top + g.cpu_h, top + g.cpu_h + 124, self.client_h);
         const network_top = top + g.cpu_h + 124;

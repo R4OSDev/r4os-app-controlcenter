@@ -46,6 +46,7 @@ pub const Usage = struct {
     next: std.ArrayList(Core) = .empty,
     percent: ?u8 = null,
     unknown_topology: bool = false,
+    discontinuity: bool = true,
 
     pub fn deinit(self: *Usage, allocator: Allocator) void {
         self.slots.deinit(allocator);
@@ -61,7 +62,9 @@ pub const Usage = struct {
     }
 
     pub fn refresh(self: *Usage, app: *const r4os.App2, allocator: Allocator) bool {
+        self.discontinuity = false;
         return self.sample(app, allocator) catch {
+            self.discontinuity = true;
             const changed = self.cores.items.len != 0 or self.percent != null or self.unknown_topology;
             self.reset();
             self.cores.clearRetainingCapacity();
@@ -76,6 +79,7 @@ pub const Usage = struct {
         if (dev.cpuTimeInfo(0, &first) != abi.cpu_capabilities_ok or first.configured_cpus == 0) return error.Unavailable;
         const count = first.configured_cpus;
         const had = self.slots.items.len;
+        self.discontinuity = had != count;
         try self.slots.resize(allocator, count);
         if (count > had) @memset(self.slots.items[had..], .{});
         self.next.clearRetainingCapacity();
@@ -100,6 +104,9 @@ pub const Usage = struct {
                     else
                         null;
                 }
+            }
+            if (slot.previous) |prev| {
+                if (prev.epoch != sample_now.epoch or prev.clock_generation != sample_now.clock_generation) self.discontinuity = true;
             }
             const times = if (slot.previous) |prev| delta(prev, sample_now) else null;
             slot.previous = sample_now;
