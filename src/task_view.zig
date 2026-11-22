@@ -4,10 +4,10 @@ const gui = r4os.gui;
 const a = r4os.abi;
 const model = @import("tasks.zig");
 const Tasks = model.Tasks;
-const ink = 0x17212b;
-const paper = 0xffffff;
-const muted = 0x496173;
-const selected = 0xd9ecf4;
+const ink = 0xeef4f3;
+const paper = 0x132027;
+const muted = 0xa3b7bc;
+const selected = 0x20333a;
 const line_h = 19;
 
 fn text(c: gui.Canvas, x: i32, y: i32, w: i32, value: []const u8, fg: u32, bg: u32) void {
@@ -29,7 +29,7 @@ fn damage(kind: u8) []const u8 {
     };
 }
 pub const View = struct {
-    scroll: @import("scroll.zig").Scroll = .{},
+    scroll: @import("scroll.zig").Scroll = .{ .compact = true },
 
     pub fn paint(self: *View, canvas: gui.Canvas, left: i32, tasks: *const Tasks) void {
         const x = left + 9;

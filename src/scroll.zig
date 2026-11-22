@@ -3,6 +3,7 @@ const gui = @import("r4os").gui;
 
 pub const Scroll = struct {
     stride: usize = 1,
+    compact: bool = false,
     first: usize = 0,
     bar: gui.Scrollbar = .{ .rect = .{} },
     thumb_y: ?i32 = null,
@@ -41,7 +42,7 @@ pub const Scroll = struct {
     }
 
     pub fn layout(self: *Scroll, rect: gui.Rect, total: usize, visible: usize) void {
-        self.bar = .{ .rect = rect, .first_index = self.first, .total_items = total, .visible_items = visible };
+        self.bar = .{ .compact = self.compact, .palette = .{ .face = 0x2a3d46, .text = 0xa3b7bc }, .rect = rect, .first_index = self.first, .total_items = total, .visible_items = visible };
         self.first = self.bar.clampedFirst();
         self.bar.first_index = self.first;
         if (self.bar.maxFirst() == 0) self.thumb_y = null;

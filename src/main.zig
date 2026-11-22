@@ -8,19 +8,18 @@ const ram = @import("ram.zig");
 const Usage = @import("usage.zig").Usage;
 const Tasks = @import("tasks.zig").Tasks;
 const TaskView = @import("task_view.zig").View;
+const theme = @import("theme.zig");
 const Text = @import("typography.zig").Text;
 const Scroll = @import("scroll.zig").Scroll;
 const Rect = gui.Rect;
 const Canvas = gui.Canvas;
 const Tab = enum { usage, tasks };
 const row_height = 72;
-const sidebar = 112;
+
 const summary_width = 110;
-const paper = 0xffffff;
-const ink = 0x17212b;
-const line = 0x778895;
-const selected = 0x0079a6;
-const face = 0xe8ecee;
+const paper = theme.bg;
+const ink = theme.ink;
+const line = theme.line;
 
 pub fn r4_app_main(api: *r4os.App2) i32 {
     var timers = [_]r4os.Timer{.{}};
@@ -41,14 +40,12 @@ fn box(x: i32, y: i32, w: i32, h: i32) Rect {
     return .{ .x = x, .y = y, .w = w, .h = h };
 }
 
-fn navRect(tab: Tab) Rect {
-    return box(5, if (tab == .usage) 7 else 39, sidebar - 10, 29);
+fn navRect(width: i32, tab: Tab) Rect {
+    return box(7, if (tab == .usage) 19 else 62, theme.rail(width) - 14, 36);
 }
 
-fn tabAt(x: i32, y: i32) ?Tab {
-    for ([_]Tab{ .usage, .tasks }) |tab| {
-        if (navRect(tab).contains(x, y)) return tab;
-    }
+fn tabAt(width: i32, x: i32, y: i32) ?Tab {
+    for ([_]Tab{ .usage, .tasks }) |tab| if (navRect(width, tab).contains(x, y)) return tab;
     return null;
 }
 
@@ -78,7 +75,7 @@ const App = struct {
     bar_caption: ram.Caption = .{},
     tasks: Tasks = .{},
     task_view: TaskView = .{},
-    usage_scroll: Scroll = .{ .stride = 18 },
+    usage_scroll: Scroll = .{ .stride = 18, .compact = true },
     focused: bool = true,
     fonts: gui.FontSet,
     text: *Text,
@@ -111,6 +108,7 @@ const App = struct {
                         self.timer.cancel();
                         self.pressed = null;
                         self.scroller().thumb_y = null;
+                        self.paint();
                     },
                     .input_reset => {
                         self.pressed = null;
@@ -120,12 +118,12 @@ const App = struct {
                         if (self.focused) self.refresh(false);
                     },
                     .wheel => |wheel| {
-                        if (wheel.x >= sidebar and wheel.delta != 0)
+                        if (wheel.x >= theme.rail(self.client_w) and wheel.delta != 0)
                             self.scrollKey(if (wheel.delta > 0) gui.Key.up else gui.Key.down);
                     },
                     .mouse => |mouse| switch (mouse.action) {
                         .down => {
-                            self.pressed = tabAt(mouse.x, mouse.y);
+                            self.pressed = tabAt(self.client_w, mouse.x, mouse.y);
                             if (self.pressed == null and self.scroller().bar.rect.contains(mouse.x, mouse.y)) {
                                 const old = self.scroller().first;
                                 self.scroller().mouseDown(mouse.x, mouse.y);
@@ -133,7 +131,7 @@ const App = struct {
                             }
                         },
                         .up => {
-                            const tab = tabAt(mouse.x, mouse.y);
+                            const tab = tabAt(self.client_w, mouse.x, mouse.y);
                             if (tab != null and tab == self.pressed) self.select(tab.?);
                             self.pressed = null;
                             self.scroller().thumb_y = null;
@@ -228,16 +226,16 @@ const App = struct {
     }
 
     fn layout(self: *const App, client_w: i32) Layout {
-        const width = @max(1, client_w - sidebar - summary_width - 8);
+        const width = @max(1, client_w - theme.rail(self.client_w) - 33);
         const n: i32 = @intCast(self.usage.cores.items.len);
-        const columns = @max(1, @min(@divTrunc(width, 48), @divTrunc(n + 1, 2)));
+        const columns = @max(1, @min(@max(1, n), @divTrunc(width + 4, 51)));
         const rows = @max(1, @divTrunc(n + columns - 1, columns));
-        const note_h: i32 = if (self.usage.unknown_topology) 22 else 0;
-        const cpu_h = @max(98, rows * 45 + note_h + 8);
+        const note_h: i32 = if (self.usage.unknown_topology or n == 0) 20 else 0;
+        const cpu_h = 134 + rows * 46 + note_h;
         return .{
             .columns = columns,
             .rows = rows,
-            .tile_w = @min(52, @divTrunc(width, columns)),
+            .tile_w = @divTrunc(width + 4, columns),
             .cpu_h = cpu_h,
             .content_h = cpu_h + 124 + sectionHeight(self.network.rows.items.len) + sectionHeight(self.disks.rows.items.len),
         };
@@ -248,10 +246,10 @@ const App = struct {
         var layout_ = self.layout(canvas.w);
         const overflow = layout_.content_h > canvas.h;
         if (overflow) {
-            canvas.w -= 17;
+            canvas.w -= 3;
             layout_ = self.layout(canvas.w);
         }
-        self.usage_scroll.layout(if (overflow) box(canvas.w + 1, 0, 15, canvas.h) else .{}, @intCast(layout_.content_h), @intCast(canvas.h));
+        self.usage_scroll.layout(if (overflow) box(frame_canvas.w - 12, 5, 11, @max(1, canvas.h - 10)) else .{}, @intCast(layout_.content_h), @intCast(canvas.h));
         const top = -@as(i32, @intCast(self.usage_scroll.first));
         if (top + layout_.cpu_h >= 0) self.paintCpu(canvas, layout_, top);
         const ram_top = top + layout_.cpu_h;
@@ -265,36 +263,33 @@ const App = struct {
     }
 
     fn paintCpu(self: *App, canvas: Canvas, geometry: Layout, y: i32) void {
-        const x = sidebar + summary_width;
-        const width = canvas.w - x - 8;
+        const p = theme.Painter{ .canvas = canvas, .text = self.text };
+        const x = theme.rail(self.client_w) + 17;
+        const w = canvas.w - x - 16;
+        const summary = theme.labelWidth(self.client_w);
+        p.label(x, y + 15, summary - 6, 18, .semibold, .left, "CPU", ink, paper);
+        var buffer: [64]u8 = undefined;
+        const caption = if (self.usage.percent) |v| theme.fmt(&buffer, "{d} %", .{v}) else "–";
+        p.label(x, y + 40, summary - 2, if (self.client_w < 650) 33 else 39, .mono, .left, caption, ink, paper);
         const n = self.usage.cores.items.len;
-        const columns = geometry.columns;
-        const rows = geometry.rows;
-        const tile_w = geometry.tile_w;
-        const tile_h = 45;
-        const height = geometry.cpu_h;
-        _ = canvas.rect(box(sidebar, y + height, canvas.w - sidebar, 1), line);
-        _ = canvas.rect(box(x - 1, y, 1, height), line);
-        self.text.draw(canvas, box(sidebar + 8, y + 4, summary_width - 16, 23), 16, .semibold, .left, "CPU", ink, paper);
-        var buf: [5]u8 = undefined;
-        const caption = percentText(self.usage.percent, &buf);
-        const summary = box(sidebar + 3, y + 25, summary_width - 6, 65);
-        self.text.draw(canvas, summary, 30, .mono, .center, caption, ink, paper);
+        p.label(x, y + 93, summary - 2, 13, .regular, .left, if (n == 1) "1 Kern" else theme.fmt(&buffer, "{d} Kerne", .{n}), theme.sub, paper);
         for (self.usage.cores.items, 0..) |core, index| {
             const i: i32 = @intCast(index);
-            const area = box(x + 5 + @mod(i, columns) * tile_w, y + 5 + @divTrunc(i, columns) * tile_h, tile_w - 4, tile_h - 4);
+            const area = box(x + @mod(i, geometry.columns) * geometry.tile_w, y + 121 + @divTrunc(i, geometry.columns) * 46, geometry.tile_w - 4, 42);
             if (area.y >= canvas.h or area.y + area.h <= 0) continue;
-            cell(canvas, area, paper);
-            if (area.h < 10) continue;
-            label(canvas.withFontId(r4os.abi.gui_font_builtin_id), area.inset(1, 1), percentText(core.percent, &buf), .center, ink, paper);
+            p.tile(area, theme.soft);
+            p.label(area.x, area.y + 3, area.w, 11, .regular, .center, theme.fmt(&buffer, "K{d}", .{index + 1}), theme.sub, theme.soft);
+            const value = if (core.percent) |v| theme.fmt(&buffer, "{d} %", .{v}) else "–";
+            p.label(area.x, area.y + 18, area.w, 13, .mono, .center, value, ink, theme.soft);
         }
         if (self.usage.unknown_topology or n == 0) {
-            const message = if (self.usage.unknown_topology) "Kernzuordnung unbekannt" else "Keine CPU-Zeitdaten";
-            label(canvas, box(x + 6, y + (if (n == 0) @as(i32, 8) else rows * tile_h + 5), width, 23), message, .left, ink, paper);
+            p.label(x, y + 121 + geometry.rows * 46, w, 13, .regular, .left, if (self.usage.unknown_topology) "Kernzuordnung unbekannt" else "Keine CPU-Zeitdaten", theme.sub, paper);
         }
+        p.rule(x, y + geometry.cpu_h, w, line);
     }
 
     fn paintRam(self: *App, canvas: Canvas, y: i32) void {
+        const sidebar = theme.rail(self.client_w);
         const x = sidebar + summary_width;
         const left = sidebar + 8;
         const narrow = summary_width - 16;
@@ -334,6 +329,7 @@ const App = struct {
     }
 
     fn deviceHeader(self: *App, c: Canvas, y: i32, section: [:0]const u8, first: bool, name: []const u8, status: []const u8) void {
+        const sidebar = theme.rail(self.client_w);
         const x = sidebar + summary_width;
         _ = c.rect(box(sidebar, y, c.w - sidebar, 1), line);
         _ = c.rect(box(x - 1, y, 1, row_height), line);
@@ -348,7 +344,7 @@ const App = struct {
     }
 
     fn deviceRate(c: Canvas, y: i32, name: []const u8, rate: ?meters.Rate, percent: ?u32) void {
-        const x = sidebar + summary_width + 8;
+        const x = theme.rail(c.w) + summary_width + 8;
         const small = c.withFontId(r4os.abi.gui_font_builtin_id);
         var buf: [32]u8 = undefined;
         label(small, box(x, y, 80, 19), name, .left, ink, paper);
@@ -415,7 +411,7 @@ const App = struct {
     }
 
     fn paintChanges(self: *App, cpu: bool, memory: bool) void {
-        const g = self.layout(if (self.usage_scroll.bar.maxFirst() != 0) self.client_w - 17 else self.client_w);
+        const g = self.layout(if (self.usage_scroll.bar.maxFirst() != 0) self.client_w - 3 else self.client_w);
         const top = -@as(i32, @intCast(self.usage_scroll.first));
         var damage = Damage{ .lo = self.client_h };
         if (cpu) damage.add(top, top + g.cpu_h + 1, self.client_h);
@@ -423,6 +419,7 @@ const App = struct {
         const network_top = top + g.cpu_h + 124;
         addRows(&damage, self.network.rows.items, network_top, self.client_h);
         addRows(&damage, self.disks.rows.items, network_top + sectionHeight(self.network.rows.items.len), self.client_h);
+        const sidebar = theme.rail(self.client_w);
         if (damage.hi > damage.lo) self.paintRegion(.{ .x = sidebar, .y = damage.lo, .w = @intCast(self.client_w - sidebar), .h = @intCast(damage.hi - damage.lo) });
     }
 
@@ -444,13 +441,19 @@ const App = struct {
         self.client_w = canvas.w;
         self.client_h = canvas.h;
         _ = canvas.clear(paper);
-        _ = canvas.rect(box(0, 0, sidebar, canvas.h), face);
-        _ = canvas.rect(box(sidebar - 1, 0, 1, canvas.h), line);
+        const sidebar = theme.rail(canvas.w);
+        const p = theme.Painter{ .canvas = canvas, .text = self.text };
+        p.rect(box(0, 0, sidebar, canvas.h), theme.rail_bg);
         for ([_]Tab{ .usage, .tasks }) |tab| {
-            const area = navRect(tab);
-            const bg: u32 = if (tab == self.tab) selected else face;
-            cell(canvas, area, bg);
-            self.text.draw(canvas, area.inset(2, 4), 13, if (tab == self.tab) .semibold else .regular, .center, if (tab == .usage) "Auslastung" else "Tasks", if (tab == self.tab) paper else ink, bg);
+            const area = navRect(canvas.w, tab);
+            const active = tab == self.tab;
+            const background = if (active) @as(u32, theme.selection) else theme.rail_bg;
+            if (active) p.tile(area, background);
+            const color = if (active and self.focused) @as(u32, theme.selected_text) else theme.sub;
+            const compact = canvas.w < 650;
+            _ = canvas.blendAlpha8(if (compact) 12 else 15, area.y + 8, 18, 18, 18, color, if (tab == .usage) @embedFile("icons/pulse.a8") else @embedFile("icons/list.a8"));
+            const x: i32 = if (compact) 33 else 37;
+            p.label(x, area.y + 7, sidebar - x - 7, if (compact) 12 else 13, if (active) .semibold else .regular, .left, if (tab == .usage) "Auslastung" else "Tasks", color, background);
         }
         if (self.tab == .usage) {
             self.paintUsage(canvas);
