@@ -54,7 +54,7 @@ pub const Traffic = struct {
     pub fn refresh(self: *Traffic, api: anytype) bool {
         const before = self.display;
         // Revisit an absent provider every five visible ticks. Driver reloads
-        // recover even when the window stays focused throughout.
+        // recover while the usage tab stays open.
         if (self.retry_in != 0) {
             self.retry_in -= 1;
             return false;

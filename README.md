@@ -1,13 +1,13 @@
 ﻿# R4OS Control Center
 
-Open Control Center from its desktop shortcut or press Ctrl+Alt+Delete. Auslastung displays the share of available CPU time spent working across all logical processors and per physical core. The RAM row shows managed, free and used physical memory and a colour-coded occupancy bar. Positive occupancy below one percent has a visible fill and the label <1%. The active view refreshes once per second. The CPU chart covers the last 60 seconds. A break in sampling leaves a gap in the chart. Each tab keeps its own scroll position. Tasks lists desktop windows and their focus, program instances, compositor counters and shell status.
+Open Control Center from its desktop shortcut or press Ctrl+Alt+Delete. Auslastung displays the share of available CPU time spent working across all logical processors and per physical core. The RAM row shows managed, free and used physical memory and a colour-coded occupancy bar. Positive occupancy below one percent has a visible fill and the label <1%. The selected tab refreshes once per second while the window is open on the desktop, including behind other windows. Minimizing it pauses updates. The CPU chart covers the last 60 seconds. A break in sampling leaves a gap in the chart. Each tab keeps its own scroll position. Tasks lists desktop windows and their focus, program instances, compositor counters and shell status.
 
 Build with `./Build.sh` on Linux or `Build.bat` on Windows.
 
 Memory bandwidth
 ----------------
 
-While the usage tab has focus, the optional R4DEV DRAM counter reports aggregate physical reads and writes. The app uses elapsed monotonic time between comparable readings. An unavailable memory-bandwidth reading displays “k. A.”. Switching tabs or losing focus returns the counters.
+While Auslastung is selected and the window is shown, the optional R4DEV DRAM counter reports aggregate physical reads and writes. The app uses elapsed monotonic time between comparable readings. An unavailable memory-bandwidth reading displays “k. A.”. Switching to Tasks, minimizing the window or closing it releases the counters.
 
 Network and disk activity
 -------------------------
@@ -22,7 +22,7 @@ read and write bytes per second and the percentage of time with at least one
 device request in flight. Concurrent requests share that time. Rates use
 1024 bytes per KB. A valid idle sample shows zero, and a missing reading
 or a new device shows a dash until a comparable interval is available.
-These counters share the focused usage tab's existing one-second refresh.
+These counters share the usage tab's one-second refresh.
 
 The app embeds Inter for labels and IBM Plex Mono for measurements. Source
 revisions and the corresponding Open Font Licenses accompany the font assets.

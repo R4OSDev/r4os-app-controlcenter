@@ -74,36 +74,35 @@ const App = struct {
     fn run(self: *App) i32 {
         _ = self.window.setTitle("Control Center");
         _ = self.window.setMinimumSize(558, 172);
-        self.updateTimer();
+        self.windowChanged(self.isShown());
         while (!self.window.sys.programShouldClose()) {
             switch (self.window.waitMessage(r4os.time_contract.timeoutForever())) {
                 .message => |message| switch (message) {
                     .close => return 0,
-                    .resize => self.paint(),
+                    .resize => self.windowChanged(self.isShown()),
                     .font_changed => {
                         self.text.system = gui.FontSet.system(&self.window.draw);
-                        self.paint();
+                        self.windowChanged(self.isShown());
                     },
                     .focus_gained => {
-                        if (!self.focused) {
-                            self.focused = true;
-                            self.updateTimer();
-                        }
+                        self.focused = true;
+                        // A taskbar or keyboard restore can deliver focus before the
+                        // Desktop republishes the unminimized window info.
+                        self.windowChanged(true);
                     },
                     .focus_lost => {
-                        self.traffic.release(self.api);
                         self.focused = false;
-                        self.timer.cancel();
                         self.pressed = null;
                         self.scroller().thumb_y = null;
-                        self.paint();
+                        self.windowChanged(self.isShown());
                     },
                     .input_reset => {
                         self.pressed = null;
                         self.scroller().thumb_y = null;
+                        if (!self.isShown()) self.pause();
                     },
                     .timer => {
-                        if (self.focused) self.refresh(false);
+                        if (self.isShown()) self.refresh(false) else self.pause();
                     },
                     .wheel => |wheel| {
                         if (wheel.x >= theme.rail(self.client_w) and wheel.delta != 0)
@@ -164,7 +163,7 @@ const App = struct {
         if (self.tab == .usage) self.traffic.release(self.api);
         self.scroller().thumb_y = null;
         self.tab = tab;
-        self.updateTimer();
+        if (self.timer.active) self.startView();
     }
 
     fn refresh(self: *App, force: bool) void {
@@ -194,13 +193,32 @@ const App = struct {
         }
     }
 
-    fn updateTimer(self: *App) void {
+    fn isShown(self: *App) bool {
+        const info = self.window.info() orelse return self.timer.active;
+        const flags = r4os.abi.GuiWindowFlag;
+        return info.flags & flags.visible != 0 and info.flags & flags.minimized == 0;
+    }
+
+    fn windowChanged(self: *App, shown: bool) void {
+        if (!shown) {
+            self.pause();
+        } else if (self.timer.active) {
+            self.paint();
+        } else {
+            self.startView();
+        }
+    }
+
+    fn pause(self: *App) void {
         self.timer.cancel();
+        self.traffic.release(self.api);
+    }
+
+    fn startView(self: *App) void {
         self.usage.reset();
         self.history.pause();
         self.network.fresh = true;
         self.disks.fresh = true;
-        if (!self.focused) return;
         self.refresh(true);
         _ = self.timer.start(&self.window.sys, r4os.TimerId.init(1), .{ .nanoseconds = 1_000_000_000 }, true);
     }
