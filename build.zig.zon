@@ -1,6 +1,6 @@
 .{
     .name = .r4os_controlcenter,
-    .version = "0.1.5",
+    .version = "0.1.18",
     .fingerprint = 0x4e0d71aa46edb2d8,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
@@ -17,5 +17,5 @@
             .hash = "r4os_sdk-0.64.244-NnPzAooIGwKlw0ZnbwlQHlpL3ajremE5dTgLFYpNekM0",
         },
     },
-    .paths = .{ "LICENSE", "NOTICE", "Licenses", "README.md", "THIRD_PARTY_NOTICES.md", "build.zig", "build.zig.zon", "module.R4MF", "src" },
+    .paths = .{ "LICENSE", "NOTICE", "Licenses", "README.md", "THIRD_PARTY_NOTICES.md", "build.zig", "build.zig.zon", "module.R4MF", "Assets", "src" },
 }
